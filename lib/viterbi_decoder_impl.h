@@ -110,6 +110,9 @@ namespace gr {
                 // Layer
                 int d_layer;
 
+                // Constellation size
+                int d_constellation_size;
+
                 int d_last_minmetric;
                 int d_last_bestmetric;
                 float d_new_ber;
@@ -152,6 +155,7 @@ namespace gr {
                         unsigned char* outbuf);
 #endif
 
+                void init_params();
                 void handle_tmcc(const pmt::pmt_t& msg);
 
             public:

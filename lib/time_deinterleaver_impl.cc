@@ -99,6 +99,7 @@ namespace gr {
             d_nsegments_C = segments_C; 
 
             int mi = 0;
+            d_shift.clear();
 
             for (int segment=0; segment<d_nsegments_A; segment++)
             {

@@ -100,6 +100,7 @@ namespace gr {
               d_inter(gr::filter::mmse_fir_interpolator_cc())
               {
                   // TODO why must fft_complex be initialized in the constructor declaration????
+                  d_debug_print = 0;
 
                   //d_fft_length = 1+d_total_segments*d_carriers_per_segment_2k*((int)pow(2.0,mode-1)); 
                   d_fft_length = pow(2.0,10+mode); 
@@ -184,7 +185,6 @@ namespace gr {
 
                   d_previous_channel_gain = (gr_complex *)volk_malloc(d_active_carriers*sizeof(gr_complex), d_align); 
                   d_delta_channel_gains = (gr_complex *)volk_malloc(d_active_carriers*sizeof(gr_complex), d_align); 
-                  d_samp_inc = 1; 
                   d_est_delta = 0;
                   d_delta_aux = 0;
                   d_samp_phase = 0; 
@@ -193,8 +193,8 @@ namespace gr {
                   d_interpolate = interpolate; 
                   d_cp_start_offset = -10; 
 
-                  float loop_bw_freq = 3.14159/100; 
-                  float loop_bw_timing = 3.14159/10000; 
+                  float loop_bw_freq = M_PI/100; 
+                  float loop_bw_timing = M_PI/10000; 
                   float damping = sqrtf(2.0f)/2.0f; 
                   float denom = (1.0 + 2.0*damping*loop_bw_freq + loop_bw_freq*loop_bw_freq); 
                   d_beta_freq = (4*loop_bw_freq*loop_bw_freq)/denom; 
@@ -205,6 +205,11 @@ namespace gr {
                   d_freq_aux = 0; 
                   d_fine_freq = 0; 
                   d_total_freq_error = 0;
+
+                  message_port_register_in(pmt::mp("reset"));
+                  set_msg_handler(pmt::mp("reset"),[this](const pmt::pmt_t& msg) {
+                    handle_reset(msg);
+                  });
 
               }
 
@@ -254,7 +259,7 @@ namespace gr {
                 for (int i = 0; i < ninputs; i++)
                 {
                     //ninput_items_required[i] = ( d_cp_length + d_fft_length ) * (noutput_items + 1) ;
-                    ninput_items_required[i] = (int)ceil(( d_cp_length + d_fft_length ) * (noutput_items + 1) * d_samp_inc) + d_inter.ntaps() ;
+                    ninput_items_required[i] = (int)ceil(( d_cp_length + d_fft_length ) * (noutput_items + 1)) + d_inter.ntaps() ;
 
                 }
 
@@ -320,7 +325,7 @@ namespace gr {
             while(oo < d_cp_length+d_fft_length) {
                 out[oo++] = d_inter.interpolate(&in[ii], d_samp_phase);
 
-                s = d_samp_phase + d_samp_inc;
+                s = d_samp_phase + 1;
                 f = floor(s);
                 incr = (int)f;
                 d_samp_phase = s - f;
@@ -351,7 +356,7 @@ namespace gr {
                 gr_complex result_2nd = gr_complex(0.0, 0.0);  
                 int low = (int)floor(d_active_carriers/2.0); 
                 volk_32fc_x2_conjugate_dot_prod_32fc(&result_2nd, &current_channel[low], &previous_channel[low], d_active_carriers-low);
-                float delta_est_error = 1.0/(1.0+((float)d_cp_length)/d_fft_length)/(2.0*3.14159*d_active_carriers/2.0)*std::arg(result_2nd*std::conj(result_1st)) ; 
+                float delta_est_error = 1.0/(1.0+((float)d_cp_length)/d_fft_length)/(2.0*M_PI*d_active_carriers/2.0)*std::arg(result_2nd*std::conj(result_1st)) ; 
                 float freq_est_error  = (std::arg(result_1st)+std::arg(result_2nd))/2.0/(1.0+(float)d_cp_length/d_fft_length); 
 
                 // if for any reason the CP position changed, the signal error is wrong and should not be fed to the loop. 
@@ -360,9 +365,6 @@ namespace gr {
                     advance_delta_loop(delta_est_error);
                     advance_freq_loop(freq_est_error);
                 }
-
-                d_samp_inc = 1.0-d_est_delta; 
-
             }
 
         void ofdm_synchronization_impl::send_symbol_index_and_resync(int current_offset)
@@ -573,9 +575,11 @@ namespace gr {
                
                 // If I got 0 integer offset several consecutive 
                 // times I assume it's been acquired. 
-                d_freq_offset_acq = (d_freq_offset_agree_count > 3);
+                //printf("d freq offset agree count: %d\n",d_freq_offset_agree_count);
+                d_freq_offset_acq = (d_freq_offset_agree_count > 10);
                 
                 // We get the integer frequency offset
+                //printf("new freq offset: %d\n",new_freq_offset);
                 return  new_freq_offset;
 
             }
@@ -764,6 +768,76 @@ namespace gr {
                 d_phase = fmod(d_phase + d_phaseinc*d_cp_length, (float)2*M_PI);
            }
 
+        void ofdm_synchronization_impl::handle_reset(const pmt::pmt_t& msg) {
+            printf("OFDM SYNC: handle reset!\n");
+            //d_fft_length = 1+d_total_segments*d_carriers_per_segment_2k*((int)pow(2.0,mode-1)); 
+            set_relative_rate(1.0 / (double) (d_cp_length + d_fft_length));
+
+            //TODO set this value automatically. 
+            float d_snr = 10.0; 
+            d_snr = pow(10, d_snr / 10.0);
+            d_rho = d_snr / (d_snr + 1.0);
+
+            d_initial_acquired = false; 
+
+            d_phaseinc = 0; 
+            d_nextphaseinc = 0; 
+            d_nextpos = 0; 
+            d_phase = 0; 
+            peak_detect_init(0.3, 0.9);
+
+            //integer frequency correction part
+            d_zeros_on_left = int(ceil((d_fft_length-d_active_carriers)/2.0)); 
+            d_freq_offset_max = 10; 
+            d_freq_offset = 0;
+            d_freq_offset_agree_count = 0;
+            d_freq_offset_acq = false; 
+            //tmcc_positions(d_fft_length); 
+            generate_prbs();
+            // Obtain phase diff for all tmcc pilots
+            // TODO eliminate d_known_phase_diff
+            for (int i = 0; i < (d_tmcc_carriers_size - 1); i++)
+            {
+                d_known_phase_diff[i] = std::norm(d_pilot_values[d_tmcc_carriers[i + 1]] - d_pilot_values[d_tmcc_carriers[i]]);
+            }
+
+            d_sp_carriers_size = (d_active_carriers-1)/12; 
+
+            d_moved_cp = true; 
+            d_current_symbol = 0; 
+            d_symbol_acq = false; 
+            d_symbol_correct_count = 0;
+            d_coarse_freq = 0;
+
+            for(int i=0; i<d_active_carriers; i++)
+            {
+                d_ones[i] = 1.0;
+            }
+
+            for (int i=1; i<12; i++){
+                d_coeffs_linear_estimate_first[i-1] = gr_complex(1.0-i/12.0,0.0);
+                d_coeffs_linear_estimate_last[i-1] = gr_complex(i/12.0,0.0);
+            }
+
+            d_est_delta = 0;
+            d_delta_aux = 0;
+            d_samp_phase = 0; 
+            d_cp_start_offset = -10; 
+
+            float loop_bw_freq = M_PI/100; 
+            float loop_bw_timing = M_PI/10000; 
+            float damping = sqrtf(2.0f)/2.0f; 
+            float denom = (1.0 + 2.0*damping*loop_bw_freq + loop_bw_freq*loop_bw_freq); 
+            d_beta_freq = (4*loop_bw_freq*loop_bw_freq)/denom; 
+            d_alpha_freq = (4*damping*loop_bw_freq)/denom; 
+            denom = (1.0 + 2.0*damping*loop_bw_timing + loop_bw_timing*loop_bw_timing); 
+            d_beta_timing = (4*loop_bw_timing*loop_bw_timing)/denom; 
+            d_alpha_timing = (4*damping*loop_bw_timing)/denom; 
+            d_freq_aux = 0; 
+            d_fine_freq = 0; 
+            d_total_freq_error = 0;
+
+        }
 
         int
             ofdm_synchronization_impl::general_work (int noutput_items,
@@ -807,7 +881,6 @@ namespace gr {
                         //the interpolation should be restarted too (not the correcting factor, 
                         //which should not have changed, only the phase of the interpolator)
                         d_samp_phase = 0; 
-                        //d_samp_inc = 1.0; 
                         //d_est_delta = 0; 
                         
                         //CP position may have changed
@@ -831,7 +904,7 @@ namespace gr {
                         int cp_start_temp; 
                         float coarse_freq_temp; 
                         //printf("nin: %d d_consumed: %d start: %d stop: %d\n",nin,d_consumed,d_cp_start + 8, std::max(d_cp_start - 8,d_cp_length+d_fft_length-1));
-                        d_cp_found = ml_sync(&in[d_consumed], d_cp_start + 8, std::max(d_cp_start - 8,d_cp_length+d_fft_length-1), nin, &cp_start_temp, &coarse_freq_temp);
+                        d_cp_found = ml_sync(&in[d_consumed], d_cp_start + 16, std::max(d_cp_start - 16,d_cp_length+d_fft_length-1), nin, &cp_start_temp, &coarse_freq_temp);
                         //d_cp_start = cp_start_temp; 
                         //d_coarse_freq = coarse_freq_temp; 
 
@@ -841,7 +914,7 @@ namespace gr {
                             // particular when sampling time error are present). We thus re-try with a bigger search range and 
                             // update d_cp_start. 
                             //printf("nin: %d d_consumed: %d start: %d stop: %d\n",nin,d_consumed,d_cp_start+16, std::max(d_cp_start-16,d_cp_length+d_fft_length-1));
-                            d_cp_found = ml_sync(&in[d_consumed], d_cp_start+16, std::max(d_cp_start-16,d_cp_length+d_fft_length-1), \
+                            d_cp_found = ml_sync(&in[d_consumed], d_cp_start+32, std::max(d_cp_start-32,d_cp_length+d_fft_length-1), \
                                     nin, &d_cp_start, &coarse_freq_temp);
                             
                             //Since I'm moving the position, the interpolator's phase should be restarted too
@@ -926,12 +999,12 @@ namespace gr {
                         // TODO a new VOLK kernel that makes complex division? Already implemented. 
                         // However, I'll use what follows instead for compatibility reasons. Uncomment the next line instead
                         // when its usage is widespread. 
-                        //volk_32fc_x2_divide_32fc(&out[i*d_active_carriers], d_integer_freq_derotated, d_channel_gain, d_active_carriers);
+                        volk_32fc_x2_divide_32fc(&out[i*d_active_carriers], d_integer_freq_derotated, d_channel_gain, d_active_carriers);
                         
-                        volk_32fc_x2_multiply_conjugate_32fc(&out[i*d_active_carriers], d_integer_freq_derotated, d_channel_gain, d_active_carriers);
-                        volk_32fc_magnitude_squared_32f(d_channel_gain_mag_sq, d_channel_gain, d_active_carriers);
-                        volk_32f_x2_divide_32f(d_channel_gain_mag_sq, d_ones, d_channel_gain_mag_sq, d_active_carriers);
-                        volk_32fc_32f_multiply_32fc(&out[i*d_active_carriers], &out[i*d_active_carriers], d_channel_gain_mag_sq, d_active_carriers);
+                        //volk_32fc_x2_multiply_conjugate_32fc(&out[i*d_active_carriers], d_integer_freq_derotated, d_channel_gain, d_active_carriers);
+                        //volk_32fc_magnitude_squared_32f(d_channel_gain_mag_sq, d_channel_gain, d_active_carriers);
+                        //volk_32f_x2_divide_32f(d_channel_gain_mag_sq, d_ones, d_channel_gain_mag_sq, d_active_carriers);
+                        //volk_32fc_32f_multiply_32fc(&out[i*d_active_carriers], &out[i*d_active_carriers], d_channel_gain_mag_sq, d_active_carriers);
                         // Using what follows instead, is actually slower (seems that taking powers is worse than simply dividing).
                         //volk_32fc_s32f_power_32fc(d_channel_gain_inv, d_channel_gain, -1.0, d_active_carriers);
                         //volk_32fc_x2_multiply_32fc(&out[i*d_active_carriers], d_integer_freq_derotated, d_channel_gain_inv, d_active_carriers);
@@ -943,7 +1016,7 @@ namespace gr {
 
                         if(freq_error_output_connected)
                         {
-                            out_freq_error[i] = d_total_freq_error/(2*3.14159); 
+                            out_freq_error[i] = d_total_freq_error/(2*M_PI); 
                         }
                         if(samp_error_output_connected)
                         {
@@ -952,7 +1025,7 @@ namespace gr {
 
                         // This is the value used for derotation. Attention should be payed, since 
                         // it includes coarse frequency, fine frequency AND integer frequency offset. 
-                        d_total_freq_error = d_fine_freq + d_coarse_freq + 3.14159265359*2*d_freq_offset; 
+                        d_total_freq_error = d_fine_freq + d_coarse_freq + M_PI*2*d_freq_offset; 
 
                         // I update the fine timing and frequency estimations. 
                         estimate_fine_synchro(d_channel_gain, d_previous_channel_gain); 
@@ -982,11 +1055,18 @@ namespace gr {
 
                     int delta_pos = required_for_interpolation - (d_fft_length+d_cp_length);
                     d_moved_cp = (delta_pos!=0);
-               }
+                }
 
                 // Tell runtime system how many input items we consumed on
                 // each input stream.
                 consume_each(d_consumed);
+
+                // Write some debug information.
+                if (++d_debug_print>=100) {
+                  d_debug_print=0;
+
+                  //printf("d_consumed: %d... phaseinc: %f  nextphaseinc: %f  nextpos: %d  phase: %f\n",d_consumed,d_phaseinc,d_nextphaseinc,d_nextpos,d_phase);
+                }
 
                // Tell runtime system how many output items we produced.
                 return (d_out);

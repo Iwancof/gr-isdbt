@@ -130,6 +130,12 @@ namespace gr {
                 // indicates whther a re-sync should signaled downstream
                 bool d_resync;
 
+                // OFDM reset threshold (if >1.5, send reset)
+                float d_nak_count;
+
+                // TMCC OK count
+                int d_ok_count;
+
                 // Symbol Index
                 int d_symbol_index;
 

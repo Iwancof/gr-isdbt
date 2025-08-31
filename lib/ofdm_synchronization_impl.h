@@ -80,6 +80,8 @@ namespace gr {
                 int d_consumed; 
                 int d_out; 
 
+                int d_debug_print;
+
                 //FFT part
                 gr_complex * d_postfft; 
                 gr::fft::fft_complex_fwd d_fft_calculator; 
@@ -131,7 +133,6 @@ namespace gr {
                 bool d_interpolate;
                 gr_complex * d_interpolated; 
                 gr::filter::mmse_fir_interpolator_cc d_inter; 
-                float d_samp_inc;
                 float d_samp_phase; 
                 int d_cp_start_offset; 
 
@@ -252,6 +253,8 @@ namespace gr {
             public:
                 ofdm_synchronization_impl(int mode, float cp_length, bool interpolate);
                 ~ofdm_synchronization_impl();
+
+                void handle_reset(const pmt::pmt_t& msg);
 
                 // Where all the action really happens
                 void forecast (int noutput_items, gr_vector_int &ninput_items_required);

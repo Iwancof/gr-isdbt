@@ -30,6 +30,9 @@ outputs:
 - domain: message
   id: params
   optional: true
+- domain: message
+  id: ofdm reset
+  optional: true
 
 #  'file_format' specifies the version of the GRC yml format used in the file
 #  and should usually not be changed.

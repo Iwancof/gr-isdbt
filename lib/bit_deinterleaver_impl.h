@@ -56,6 +56,7 @@ namespace gr {
          int d_carriers_per_segment; 
          int d_noutput;
          int d_noutput_real;
+         bool d_reset_interpolation;
 
          //Here are the symbols. To create an output I have to check
          //several symbols back. Where and how many depends on the 

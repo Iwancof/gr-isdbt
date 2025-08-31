@@ -30,6 +30,9 @@ inputs:
 -   domain: stream
     dtype: complex
     vlen: 1
+-   domain: message
+    id: reset
+    optional: true
 
 outputs:
 -   domain: stream

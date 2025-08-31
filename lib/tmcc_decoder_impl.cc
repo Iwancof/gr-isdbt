@@ -554,7 +554,7 @@ namespace gr {
 
                             //// Then, we print the full tmcc
 
-                            //   for (int i = 0; i < d_symbols_per_frame; i++)
+                           //   for (int i = 0; i < d_symbols_per_frame; i++)
                             //   printf("%i", d_rcv_tmcc_data[i]);
                             //   printf("\n");
 
@@ -563,28 +563,68 @@ namespace gr {
                             {
                                 tmcc_print();
                             }
-                            printf("TMCC OK\n"); 
 
-                            // send TMCC parameters through message port
-                            std::vector<uint8_t> dataVec;
-                            for (size_t _i=0; _i<d_rcv_tmcc_data.size(); _i++) {
-                              dataVec.push_back(d_rcv_tmcc_data[_i]);
+                            // check whether we have 13 segments
+                            int segments_A=((d_rcv_tmcc_data[37]<<3)|(d_rcv_tmcc_data[38]<<2)|(d_rcv_tmcc_data[39]<<1)|d_rcv_tmcc_data[40]);
+                            int segments_B=((d_rcv_tmcc_data[50]<<3)|(d_rcv_tmcc_data[51]<<2)|(d_rcv_tmcc_data[52]<<1)|d_rcv_tmcc_data[53]);
+                            int segments_C=((d_rcv_tmcc_data[63]<<3)|(d_rcv_tmcc_data[64]<<2)|(d_rcv_tmcc_data[65]<<1)|d_rcv_tmcc_data[66]);
+                            if (segments_A==15) segments_A=0;
+                            if (segments_B==15) segments_B=0;
+                            if (segments_C==15) segments_C=0;
+
+                            if (segments_A+segments_B+segments_C==13) {
+                              d_nak_count-=0.0625;
+                              if (d_nak_count<0.0f) {
+                                if (++d_ok_count<2) printf("TMCC OK\n");
+                                d_nak_count=0.0f;
+                              } else {
+                                printf("TMCC OK (cooldown: %f)\n",d_nak_count);
+                                ++d_ok_count;
+                              }
+
+                              // send TMCC parameters through message port
+                              std::vector<uint8_t> dataVec;
+                              for (size_t _i=0; _i<d_rcv_tmcc_data.size(); _i++) {
+                                dataVec.push_back(d_rcv_tmcc_data[_i]);
+                              }
+                              pmt::pmt_t paramsMsg=pmt::init_u8vector(
+                                d_rcv_tmcc_data.size(),
+                                dataVec
+                              );
+
+                              message_port_pub(pmt::mp("params"),paramsMsg);
+                            } else {
+                              d_nak_count+=1.0f;
+                              printf("TMCC NOT OK (PARITY PASS; NOT 13 SEGMENTS (%d, %d, %d); cooldown: %f; streak: %d)\n",segments_A,segments_B,segments_C,d_nak_count,d_ok_count);
+                              d_ok_count=0;
+                              if (d_nak_count>1.5f) {
+                                printf("TMCC decoder: STILL NOT OK - OFDM reset sent\n");
+                                message_port_pub(pmt::mp("ofdm reset"),pmt::PMT_NIL);
+                                d_nak_count=-1.0f;
+                              }
                             }
-                            pmt::pmt_t paramsMsg=pmt::init_u8vector(
-                              d_rcv_tmcc_data.size(),
-                              dataVec
-                            );
-
-                            message_port_pub(pmt::mp("params"),paramsMsg);
                         }
                         else
                         {
-                            printf("TMCC NOT OK\n");
+                            d_nak_count+=1.0f;
+                            printf("TMCC NOT OK (cooldown: %f; streak: %d)\n",d_nak_count,d_ok_count);
+                            d_ok_count=0;
+                            if (d_nak_count>1.5f) {
+                              printf("TMCC decoder: STILL NOT OK - OFDM reset sent\n");
+                              message_port_pub(pmt::mp("ofdm reset"),pmt::PMT_NIL);
+                              d_nak_count=-1.0f;
+                            }
                             //if (d_print_params)
                             //{
                             //    tmcc_print();
                             //}
                         }
+                    } else {
+                      if ((d_since_last_tmcc&511)==0) {
+                        printf("TMCC WHAT? - OFDM reset sent\n");
+                        message_port_pub(pmt::mp("ofdm reset"),pmt::PMT_NIL);
+                        d_nak_count=-1.0f;
+                      }
                     }
                 }
                 if(!end_frame)
@@ -652,11 +692,15 @@ namespace gr {
 
             d_frame_end = false; 
             d_resync = true; 
+            d_nak_count = -1.0;
+            d_ok_count = 0;
 
             set_tag_propagation_policy(TPP_DONT); 
 
             // Init TMCC message port
             message_port_register_out(pmt::mp("params"));
+            // Init OFDM message port
+            message_port_register_out(pmt::mp("ofdm reset"));
         }
 
         /*

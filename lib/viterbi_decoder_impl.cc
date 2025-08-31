@@ -550,8 +550,23 @@ namespace gr {
                     // d_puncture: depuncturing matrix
                     d_layer = layer;
                     d_rate = rate;
+                    d_constellation_size = constellation_size;
 
-                    switch (rate){
+                    init_params();
+
+                    message_port_register_in(pmt::mp("params"));
+                    set_msg_handler(pmt::mp("params"),[this](const pmt::pmt_t& msg) {
+                      handle_tmcc(msg);
+                    });
+                }
+
+                /*
+                 * Our virtual destructor.
+                 */
+                viterbi_decoder_impl::~viterbi_decoder_impl() { delete[] d_inbits; }
+
+                void viterbi_decoder_impl::init_params() {
+                    switch (d_rate){
                         case 0:
                             d_k = 1;
                             d_n = 2;
@@ -587,8 +602,8 @@ namespace gr {
                     // initial state
                     d_init = 0; 
                     // constellation size
-                    d_m = log2(constellation_size);
-                    d_consts = constellation_size;
+                    d_m = log2(d_constellation_size);
+                    d_consts = d_constellation_size;
            
                     // TODO what's the best value for d_bsize??? 
                     //d_bsize = 204*8/d_k; 
@@ -644,17 +659,7 @@ namespace gr {
                     viterbi_chunks_init_generic(d_metric0_generic, d_path0_generic);
                     printf("[Viterbi decoder] Choosing generic (slower) implementation\n");
 #endif
-
-                    message_port_register_in(pmt::mp("params"));
-                    set_msg_handler(pmt::mp("params"),[this](const pmt::pmt_t& msg) {
-                      handle_tmcc(msg);
-                    });
                 }
-
-                /*
-                 * Our virtual destructor.
-                 */
-                viterbi_decoder_impl::~viterbi_decoder_impl() { delete[] d_inbits; }
 
                 void viterbi_decoder_impl::handle_tmcc(const pmt::pmt_t& msg) {
                   if (is_u8vector(msg)) {
@@ -674,7 +679,11 @@ namespace gr {
                       }
 
                       if (constellation_size[d_layer]!=d_consts || rates[d_layer]!=d_rate) {
-                        printf("TODO: SWITCH TO %d with RATE %d!\n",constellation_size[d_layer],rates[d_layer]);
+                        printf("VITERBI: reinitializing params... (const %d with rate %d)\n",constellation_size[d_layer],rates[d_layer]);
+                        d_rate = rates[d_layer];
+                        d_constellation_size = constellation_size[d_layer];
+
+                        init_params();
                       }
                     }
                   }

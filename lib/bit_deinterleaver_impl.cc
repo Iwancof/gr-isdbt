@@ -89,6 +89,8 @@ namespace gr {
 
             init_params(segments,constellation_size);
 
+            d_reset_interpolation=false;
+
             message_port_register_in(pmt::mp("params"));
             set_msg_handler(pmt::mp("params"),[this](const pmt::pmt_t& msg) {
               handle_tmcc(msg);
@@ -122,7 +124,6 @@ namespace gr {
 			}
 
             //set_min_noutput_items(d_noutput_real);
-            set_interpolation(segments * d_data_carriers_mode1 * ((int)pow(2.0, d_mode-1)));
             d_shift=std::deque<unsigned char>(120,0);
         }
 
@@ -147,6 +148,7 @@ namespace gr {
               if (segments[d_layer]!=d_nsegments || constellation_size[d_layer]!=d_const_size) {
                 printf("bit deinterleaver: reinitializing params... (%d/%d)\n",segments[d_layer],constellation_size[d_layer]);
                 init_params(segments[d_layer],constellation_size[d_layer]);
+                d_reset_interpolation=true;
               }
             }
           }
@@ -197,6 +199,11 @@ namespace gr {
 						}
                           
 					//} 
+                }
+                if (d_reset_interpolation) {
+                  printf("RESET INTERPOLATION\n");
+                  set_interpolation(d_nsegments * d_data_carriers_mode1 * ((int)pow(2.0, d_mode-1)));
+                  d_reset_interpolation=false;
                 }
                 // Tell runtime system how many output items we produced.
                 return noutput_items;
