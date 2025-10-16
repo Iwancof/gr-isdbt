@@ -801,7 +801,7 @@ namespace gr {
                 consume_each (noutput_items);
 
                 // Tell runtime system how many output items we produced.
-                return noutput_items;
+                return (d_ok_count>1)?noutput_items:0;
             }
 
     } /* namespace isdbt */

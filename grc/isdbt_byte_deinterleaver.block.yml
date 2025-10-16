@@ -9,6 +9,9 @@ templates:
 inputs:
 -   domain: stream
     dtype: byte
+-   domain: message
+    id: reset
+    optional: true
 
 outputs:
 -   domain: stream

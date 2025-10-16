@@ -42,7 +42,7 @@ namespace gr {
      * \ingroup isdbt
      *
      */
-    class ISDBT_API bit_deinterleaver : virtual public gr::sync_interpolator
+    class ISDBT_API bit_deinterleaver : virtual public gr::block
     {
      public:
       typedef std::shared_ptr<bit_deinterleaver> sptr;

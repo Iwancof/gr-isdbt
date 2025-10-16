@@ -62,13 +62,14 @@ namespace gr {
             // this block will output a vector of size d_TSP_SIZE
             set_relative_rate(1.0/(d_TSP_SIZE)); 
             
-            // The "difficult" part in any deinterleaver is setting the buffer's
-            // size right. Here, we put them in the reverse order of the transmitter. 
-            for (int i=d_I-1; i>=0; i--)
-                d_shift.push_back(new boost::circular_buffer<unsigned char>(1 + d_M*i,0)); 
-                //d_shift.push_back(new std::deque<unsigned char>(d_M*i,0)); 
+            handle_reset();
 
             set_tag_propagation_policy(gr::block::TPP_DONT); 
+
+            message_port_register_in(pmt::mp("reset"));
+            set_msg_handler(pmt::mp("reset"),[this](const pmt::pmt_t& msg) {
+              handle_reset();
+            });
         }
 
         /*
@@ -81,6 +82,21 @@ namespace gr {
                 delete d_shift.back();
                 d_shift.pop_back();
             }
+        }
+
+        void byte_deinterleaver_impl::handle_reset() {
+            printf("byte deinterleaver: handling a reset...\n");
+            for (unsigned int i = 0; i < d_shift.size(); i++)
+            {
+                delete d_shift.back();
+                d_shift.pop_back();
+            }
+
+            // The "difficult" part in any deinterleaver is setting the buffer's
+            // size right. Here, we put them in the reverse order of the transmitter. 
+            for (int i=d_I-1; i>=0; i--)
+                d_shift.push_back(new boost::circular_buffer<unsigned char>(1 + d_M*i,0)); 
+                //d_shift.push_back(new std::deque<unsigned char>(d_M*i,0)); 
         }
 
         void

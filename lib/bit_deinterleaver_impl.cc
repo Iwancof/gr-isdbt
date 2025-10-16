@@ -71,12 +71,12 @@ namespace gr {
          */
         bit_deinterleaver_impl::
             bit_deinterleaver_impl(int mode, int layer, int segments, int constellation_size)
-            	: gr::sync_interpolator("bit_deinterleaver",
+            	: gr::block("bit_deinterleaver",
                     gr::io_signature::make(1, 1, 
                         sizeof(unsigned char) * d_total_segments *
                         d_data_carriers_mode1 * ((int)pow(2.0, mode-1))),
                    // gr::io_signature::make3(1, 1, sizeof(unsigned char)), d_total_segments * d_data_carriers_mode1 * ((int)pow(2.0, mode-1))) Original implementation
-                       gr::io_signature::make(1, 1, sizeof(unsigned char)), segments * d_data_carriers_mode1 * ((int)pow(2.0, mode-1))) //Implementation that still works
+                       gr::io_signature::make(1, 1, sizeof(unsigned char))) //Implementation that still works
                                        //gr::io_signature::make3(1, 3, sizeof(unsigned char), sizeof(unsigned char), sizeof(unsigned char)), d_total_segments* d_data_carriers_mode1 * ((int)pow(2.0, mode-1)))
                                        //gr::io_signature::make3(1, 3, sizeof(unsigned char), sizeof(unsigned char), sizeof(unsigned char)), (segments_A* d_data_carriers_mode1 * ((int)pow(2.0, mode-1)), segments_B* d_data_carriers_mode1 * ((int)pow(2.0, mode-1)), segments_C* d_data_carriers_mode1 * ((int)pow(2.0, mode-1))))
         {
@@ -88,6 +88,7 @@ namespace gr {
 	    printf("d_noutput: %d\n",d_noutput);
 
             init_params(segments,constellation_size);
+             set_interpolation(d_nsegments * d_data_carriers_mode1 * ((int)pow(2.0, d_mode-1)));
 
             d_reset_interpolation=false;
 
@@ -95,6 +96,9 @@ namespace gr {
             set_msg_handler(pmt::mp("params"),[this](const pmt::pmt_t& msg) {
               handle_tmcc(msg);
             });
+
+            // Init TMCC params change message port
+            message_port_register_out(pmt::mp("changed"));
         }
 
         /*
@@ -173,6 +177,7 @@ namespace gr {
 				// Do <+signal processing+>
                 unsigned char aux; 
                 unsigned char mask; 
+                        //printf("noutput_items %d\n",noutput_items);
 			//printf("---BIT DEINTERLEAVER-> noutput_items = %d\n", noutput_items);				
 			for (int i=0; i<noutput_items/d_noutput_real; i++)
 			{
@@ -200,14 +205,38 @@ namespace gr {
                           
 					//} 
                 }
-                if (d_reset_interpolation) {
-                  printf("RESET INTERPOLATION\n");
-                  set_interpolation(d_nsegments * d_data_carriers_mode1 * ((int)pow(2.0, d_mode-1)));
-                  d_reset_interpolation=false;
-                }
                 // Tell runtime system how many output items we produced.
                 return noutput_items;
             }
+
+void bit_deinterleaver_impl::forecast(int noutput_items, gr_vector_int& ninput_items_required)
+{
+    unsigned ninputs = ninput_items_required.size();
+    for (unsigned i = 0; i < ninputs; i++) {
+        ninput_items_required[i] = noutput_items / interpolation() + history() - 1;
+    }
+}
+
+int bit_deinterleaver_impl::general_work(int noutput_items,
+                                    gr_vector_int& ninput_items,
+                                    gr_vector_const_void_star& input_items,
+                                    gr_vector_void_star& output_items)
+{
+    if (d_reset_interpolation) {
+      printf("RESET INTERPOLATION\n");
+      set_interpolation(d_nsegments * d_data_carriers_mode1 * ((int)pow(2.0, d_mode-1)));
+      d_reset_interpolation=false;
+      //d_shift=std::deque<unsigned char>(120,0);
+      consume_each(ninput_items[0]);
+      message_port_pub(pmt::mp("changed"),pmt::PMT_NIL);
+      return 0;
+    }
+    int r = work(noutput_items, input_items, output_items);
+    if (r > 0)
+        consume_each(r / interpolation());
+    return r;
+}
+
 
     } /* namespace isdbt */
 } /* namespace gr */

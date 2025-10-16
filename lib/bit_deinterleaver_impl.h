@@ -56,6 +56,7 @@ namespace gr {
          int d_carriers_per_segment; 
          int d_noutput;
          int d_noutput_real;
+         unsigned d_interpolation;
          bool d_reset_interpolation;
 
          //Here are the symbols. To create an output I have to check
@@ -68,15 +69,27 @@ namespace gr {
          void init_params(int segments, int constellation_size);
          void handle_tmcc(const pmt::pmt_t& msg);
 
-
-     public:
-      bit_deinterleaver_impl(int mode, int layer, int segments, int constellation_size);
-      ~bit_deinterleaver_impl();
-
       // Where all the action really happens
       int work(int noutput_items,
                         gr_vector_const_void_star &input_items,
                         gr_vector_void_star &output_items);
+
+     public:
+      bit_deinterleaver_impl(int mode, int layer, int segments, int constellation_size);
+      ~bit_deinterleaver_impl();
+      unsigned interpolation() const { return d_interpolation; }
+      void set_interpolation(unsigned interpolation)
+      {
+          d_interpolation = interpolation;
+          set_relative_rate((uint64_t)interpolation, 1);
+          set_output_multiple(interpolation);
+      }
+
+      void forecast(int noutput_items, gr_vector_int& ninput_items_required);
+      int general_work(int noutput_items,
+                     gr_vector_int& ninput_items,
+                     gr_vector_const_void_star& input_items,
+                     gr_vector_void_star& output_items);
     };
 
   } // namespace isdbt

@@ -10,6 +10,9 @@ inputs:
 -   domain: stream
     dtype: byte
     vlen: 204
+-   domain: message
+    id: reset
+    optional: true
 
 outputs:
 -   domain: stream

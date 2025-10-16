@@ -48,6 +48,8 @@ namespace gr {
       std::vector< boost::circular_buffer<unsigned char> * > d_shift;
       //std::vector< std::deque<unsigned char> * > d_shift;
 
+      void handle_reset();
+
      public:
       byte_deinterleaver_impl();
       ~byte_deinterleaver_impl();

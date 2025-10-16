@@ -83,6 +83,11 @@ namespace gr {
 
             // I initiate the PRBS register (useful for testing)
             init_prbs();
+
+            message_port_register_in(pmt::mp("reset"));
+            set_msg_handler(pmt::mp("reset"),[this](const pmt::pmt_t& msg) {
+              init_prbs();
+            });
         }
 
 
