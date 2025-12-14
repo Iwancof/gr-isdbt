@@ -52,13 +52,14 @@ namespace gr {
 
                 // for symbol time and coarse frequency synchronization
                 int d_cp_start;
+                float d_cp_fine;
+                float d_cp_speed;
                 bool d_cp_found; 
                 gr_complex * d_gamma;
                 float * d_phi; 
                 float * d_lambda;
                 float d_coarse_freq;
                 gr_complex * d_derot;
-                gr_complex * d_conj;
                 float * d_norm;
                 gr_complex * d_corr;
                 //ml sync
@@ -74,6 +75,13 @@ namespace gr {
                 double d_nextphaseinc;
                 int d_nextpos;
                 float d_phase; 
+                float d_symbol_phase; 
+
+                // speed correction magic
+                gr_complex last_gains[32];
+                int last_gain_cur;
+                bool last_gains_acquired;
+                float last_gain_err;
                 
                 bool d_initial_acquired; 
 
@@ -83,7 +91,8 @@ namespace gr {
                 int d_debug_print;
 
                 //FFT part
-                gr_complex * d_postfft; 
+                gr_complex * d_postfft;
+                gr_complex * d_fineshift;
                 gr::fft::fft_complex_fwd d_fft_calculator; 
 
                 //zero padding to the left
@@ -109,16 +118,27 @@ namespace gr {
                 //symbol estimation and channel equalization part
                 gr_complex * d_pilot_values; 
                 int d_sp_carriers_size;
+                int d_channel_gain_fill[4];
                 gr_complex * d_channel_gain; 
+                gr_complex * d_channel_gain_avg; 
+                gr_complex * d_channel_gain_packed[4];
+                float * d_channel_gain_mag;
                 // These are some variables I will use to increase performance
                 // the interpolation coefficientes I use for linear interpolation
                 gr_complex * d_coeffs_linear_estimate_first;
                 gr_complex * d_aux_linear_estimate_first;
                 gr_complex * d_coeffs_linear_estimate_last;
                 gr_complex * d_aux_linear_estimate_last;
-                float * d_channel_gain_mag_sq;
+
+                // cubic spline versions of the above
+                gr_complex * d_coeffs_cubic_estimate[4];
+                gr_complex * d_aux_cubic_estimate[4];
+
+                // FIR versions of the above
+                gr_complex * d_coeffs_fir_estimate[8];
+                gr_complex * d_aux_fir_estimate[8];
+
                 float * d_ones;
-                gr_complex * d_channel_gain_inv; 
 
                 int d_current_symbol;
                 int d_previous_symbol; 
@@ -128,6 +148,7 @@ namespace gr {
          
                // fine frequency and symbol synchro 
                 gr_complex * d_previous_channel_gain; 
+                gr_complex * d_previous_zero_gain;
                 gr_complex * d_delta_channel_gains; 
                 //whether to use the sampling correction (may be costy)
                 bool d_interpolate;
@@ -160,6 +181,11 @@ namespace gr {
                  */
                 void estimate_fine_synchro(gr_complex * current_channel, gr_complex * previous_channel); 
 
+                /*!
+                 * \brief Estimates post-fft synchronization parameters (rate). First symbol only.
+                 */
+                void estimate_fine_rate(gr_complex * current_channel, gr_complex * previous_channel); 
+
                /*!
                 * Signals downstream the symbol index and (if necessary) resynching. 
                 */ 
@@ -169,6 +195,26 @@ namespace gr {
                  * \brief Calculates the channel taps based on pilots. This is the linear very simple implementation. 
                  */
                 void linearly_estimate_channel_taps(int current_symbol, gr_complex * channel_gain);
+
+                 /*!
+                 * \brief Calculates the channel taps based on pilots (with a precision of 3). Takes all four symbols into account.
+                 */
+                void linearly_estimate_channel_taps_3(gr_complex * channel_gain);
+
+                 /*!
+                 * \brief Calculates the channel taps based on pilots. This is a slightly better implementation using cubic spline, which for some reason actually performs worse... 
+                 */
+                void cubicly_estimate_channel_taps(int current_symbol, gr_complex * channel_gain);
+
+                 /*!
+                 * \brief Calculates the channel taps based on pilots. This one uses a sinc filter. 
+                 */
+                void fir_estimate_channel_taps(int current_symbol, gr_complex * channel_gain);
+
+                 /*!
+                 * \brief Calculates the channel taps based on pilots. This uses the MMSE interpolator, which I have no idea how it works.
+                 */
+                void magically_estimate_channel_taps(int current_symbol, gr_complex * channel_gain);
 
                 /*!
                  * \brief Calculates the channel taps at the SPs, given the input complex baseband signal and a symbol number 

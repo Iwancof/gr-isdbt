@@ -258,6 +258,7 @@ namespace gr {
 
         /*
          * This method checks whether or not the BCH code in d_rcv_tmcc_data is correct. 
+         * TODO: completely broken in mode 1???
          */
         int 
             tmcc_decoder_impl::tmcc_parity_check( )

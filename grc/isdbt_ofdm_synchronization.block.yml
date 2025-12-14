@@ -43,6 +43,11 @@ outputs:
     dtype: complex
     vlen: ${ 1+13*108*2**(mode-1) }
     optional: true
+-   label: pilot gain
+    domain: stream
+    dtype: float
+    vlen: ${ 1+13*108*2**(mode-1) }
+    optional: true
 -   label: freq. error
     domain: stream
     dtype: float

@@ -42,6 +42,13 @@
 //for debugging 
 #include <ctime>
 
+// padding for different channel gain estimation strategies
+// (also to speed up the estimation code)
+#define CH_GAIN_PAD 140
+#define CH_GAIN_FIRST 48
+
+#define SYMBOLS_BEFORE_AVG 1000
+
 namespace gr {
     namespace isdbt {
 
@@ -90,10 +97,11 @@ namespace gr {
             : gr::block("ofdm_synchronization",
                     gr::io_signature::make(1, 1, sizeof(gr_complex)),
                     //gr::io_signature::make(1,1,sizeof(gr_complex)*pow(2.0,10+mode))),
-                    gr::io_signature::make3(1, 4, \
-                            sizeof(gr_complex)*(1+d_total_segments*d_carriers_per_segment_2k*((int)pow(2.0,mode-1))),\
-                            sizeof(gr_complex)*(1+d_total_segments*d_carriers_per_segment_2k*((int)pow(2.0,mode-1))),\
-                            sizeof(float))
+                    gr::io_signature::make(1, 5,
+                            {sizeof(gr_complex)*(1+d_total_segments*d_carriers_per_segment_2k*((int)pow(2.0,mode-1))),
+                            sizeof(gr_complex)*(1+d_total_segments*d_carriers_per_segment_2k*((int)pow(2.0,mode-1))),
+                            sizeof(float)*(1+d_total_segments*d_carriers_per_segment_2k*((int)pow(2.0,mode-1))),
+                            sizeof(float),sizeof(float)})
 
               ),
               d_fft_calculator(gr::fft::fft_complex_fwd(pow(2.0,10+mode),true)), 
@@ -115,6 +123,17 @@ namespace gr {
                   d_rho = d_snr / (d_snr + 1.0);
 
                   d_initial_acquired = false; 
+                  d_cp_start = 0;
+                  d_cp_speed = 0;
+                  d_cp_fine = 0;
+
+                  // NEW CODE FOR PHASE LOCK
+                  for (int i=0; i<32; i++) {
+                    last_gains[i]=gr_complex(0,0);
+                  }
+                  last_gain_cur=0;
+                  last_gain_err=0;
+                  last_gains_acquired=false;
 
                   //VOLK alignment as recommended by GNU Radio's Manual. It has a similar effect 
                   //than set_output_multiple(), thus we will generally get multiples of this value
@@ -132,12 +151,13 @@ namespace gr {
                   d_nextphaseinc = 0; 
                   d_nextpos = 0; 
                   d_phase = 0; 
-                  d_conj = (gr_complex *)volk_malloc((4 * d_fft_length + d_cp_length)*sizeof(gr_complex), d_align);
-                  d_norm = (float *)volk_malloc((4 * d_fft_length + d_cp_length)*sizeof(float), d_align);
-                  d_corr = (gr_complex *)volk_malloc((4 * d_fft_length + d_cp_length)*sizeof(gr_complex), d_align);
+                  d_symbol_phase = 0; 
+                  d_norm = (float *)volk_malloc((16 * d_fft_length + d_cp_length)*sizeof(float), d_align);
+                  d_corr = (gr_complex *)volk_malloc((16 * d_fft_length + d_cp_length)*sizeof(gr_complex), d_align);
                   peak_detect_init(0.3, 0.9);
 
                   d_postfft = (gr_complex *)volk_malloc(d_fft_length*sizeof(gr_complex), d_align);
+                  d_fineshift = (gr_complex *)volk_malloc(d_fft_length*sizeof(gr_complex), d_align);
 
                   //integer frequency correction part
                   d_zeros_on_left = int(ceil((d_fft_length-d_active_carriers)/2.0)); 
@@ -165,14 +185,18 @@ namespace gr {
                   d_symbol_correct_count = 0;
                   d_coarse_freq = 0;
 
-                  d_channel_gain = (gr_complex *)volk_malloc(d_active_carriers*sizeof(gr_complex), d_align); 
-                  d_channel_gain_mag_sq = (float *)volk_malloc(d_active_carriers*sizeof(float), d_align);
-                  d_ones = (float *)volk_malloc(d_active_carriers*sizeof(float),d_align);
-                  for(int i=0; i<d_active_carriers; i++)
+                  d_channel_gain = (gr_complex *)volk_malloc((d_active_carriers+CH_GAIN_PAD)*sizeof(gr_complex), d_align); 
+                  d_channel_gain_avg = (gr_complex *)volk_malloc((d_active_carriers+CH_GAIN_PAD)*sizeof(gr_complex), d_align); 
+                  for (int i=0; i<4; i++) {
+                    d_channel_gain_packed[i] = (gr_complex *)volk_malloc((d_sp_carriers_size+CH_GAIN_PAD)*sizeof(gr_complex), d_align); 
+                    d_channel_gain_fill[i]=12;
+                  }
+                  d_channel_gain_mag = (float *)volk_malloc((d_active_carriers+CH_GAIN_PAD)*sizeof(float), d_align); 
+                  d_ones = (float *)volk_malloc((d_active_carriers+CH_GAIN_PAD)*sizeof(float),d_align);
+                  for(int i=0; i<d_active_carriers+CH_GAIN_PAD; i++)
                   {
                       d_ones[i] = 1.0;
                   }
-                  d_channel_gain_inv = (gr_complex *)volk_malloc(d_active_carriers*sizeof(gr_complex), d_align);
 
                   d_coeffs_linear_estimate_first = (gr_complex *)volk_malloc(sizeof(gr_complex)*11, d_align); 
                   d_aux_linear_estimate_first = (gr_complex *)volk_malloc(sizeof(gr_complex)*11, d_align); 
@@ -183,8 +207,34 @@ namespace gr {
                       d_coeffs_linear_estimate_last[i-1] = gr_complex(i/12.0,0.0);
                   }
 
-                  d_previous_channel_gain = (gr_complex *)volk_malloc(d_active_carriers*sizeof(gr_complex), d_align); 
-                  d_delta_channel_gains = (gr_complex *)volk_malloc(d_active_carriers*sizeof(gr_complex), d_align); 
+                  for (int i=0; i<4; i++) {
+                    d_coeffs_cubic_estimate[i] = (gr_complex *)volk_malloc(sizeof(gr_complex)*11, d_align); 
+                    d_aux_cubic_estimate[i] = (gr_complex *)volk_malloc(sizeof(gr_complex)*11, d_align); 
+                  }
+                  for (int i=1; i<12; i++){
+                      float x = (float)i / 12.0f;
+                      d_coeffs_cubic_estimate[0][i-1] = gr_complex(-0.5*pow(x,3)+1.0*pow(x,2)-0.5*x,0.0);
+                      d_coeffs_cubic_estimate[1][i-1] = gr_complex(1.5*pow(x,3)-2.5*pow(x,2)+1.0,0.0);
+                      d_coeffs_cubic_estimate[2][i-1] = gr_complex(-1.5*pow(x,3)+2.0*pow(x,2)+0.5*x,0.0);
+                      d_coeffs_cubic_estimate[3][i-1] = gr_complex(0.5*pow(x,3)-0.5*pow(x,2),0.0);
+                  }
+
+                  for (int i=0; i<8; i++) {
+                    d_coeffs_fir_estimate[i] = (gr_complex *)volk_malloc(sizeof(gr_complex)*11, d_align); 
+                    d_aux_fir_estimate[i] = (gr_complex *)volk_malloc(sizeof(gr_complex)*11, d_align); 
+                  }
+                  for (int i=1; i<12; i++){
+                    for (int j=0; j<8; j++) {
+                      float x = (((float)i / 12.0f) - j) + 3;
+                      float x_p = x*M_PI;
+                      float w = cos(M_PI*x/8.0f);
+                      d_coeffs_fir_estimate[j][i-1] = gr_complex(w*(sin(x_p)/x_p),0.0);
+                    }
+                  }
+
+                  d_previous_zero_gain = (gr_complex *)volk_malloc((d_active_carriers+CH_GAIN_PAD)*sizeof(gr_complex), d_align); 
+                  d_previous_channel_gain = (gr_complex *)volk_malloc((d_active_carriers+CH_GAIN_PAD)*sizeof(gr_complex), d_align); 
+                  d_delta_channel_gains = (gr_complex *)volk_malloc((d_active_carriers+CH_GAIN_PAD)*sizeof(gr_complex), d_align); 
                   d_est_delta = 0;
                   d_delta_aux = 0;
                   d_samp_phase = 0; 
@@ -223,11 +273,11 @@ namespace gr {
             volk_free(d_phi);
             volk_free(d_lambda);
             volk_free(d_derot);
-            volk_free(d_conj);
             volk_free(d_norm); 
             volk_free(d_corr);
 
             volk_free(d_postfft); 
+            volk_free(d_fineshift); 
 
             volk_free(d_pilot_values); 
             volk_free(d_known_phase_diff); 
@@ -235,15 +285,29 @@ namespace gr {
             volk_free(d_corr_sp);
 
             volk_free(d_channel_gain); 
-            volk_free(d_channel_gain_mag_sq);
+            volk_free(d_channel_gain_avg); 
+            for (int i=0; i<4; i++) {
+              volk_free(d_channel_gain_packed[i]); 
+            }
+            volk_free(d_channel_gain_mag); 
             volk_free(d_ones);
-            volk_free(d_channel_gain_inv);
 
             volk_free(d_coeffs_linear_estimate_first); 
             volk_free(d_aux_linear_estimate_first); 
             volk_free(d_coeffs_linear_estimate_last); 
             volk_free(d_aux_linear_estimate_last); 
 
+            for (int i=0; i<4; i++) {
+              volk_free(d_coeffs_cubic_estimate[i]); 
+              volk_free(d_aux_cubic_estimate[i]); 
+            }
+
+            for (int i=0; i<8; i++) {
+              volk_free(d_coeffs_fir_estimate[i]); 
+              volk_free(d_aux_fir_estimate[i]); 
+            }
+
+            volk_free(d_previous_zero_gain); 
             volk_free(d_previous_channel_gain); 
             volk_free(d_delta_channel_gains); 
 
@@ -259,7 +323,7 @@ namespace gr {
                 for (int i = 0; i < ninputs; i++)
                 {
                     //ninput_items_required[i] = ( d_cp_length + d_fft_length ) * (noutput_items + 1) ;
-                    ninput_items_required[i] = (int)ceil(( d_cp_length + d_fft_length ) * (noutput_items + 1)) + d_inter.ntaps() ;
+                    ninput_items_required[i] = (int)ceil(( d_cp_length + d_fft_length ) * (noutput_items + 2)) + d_inter.ntaps() ;
 
                 }
 
@@ -343,8 +407,10 @@ namespace gr {
         }
 
         void ofdm_synchronization_impl::advance_delta_loop(float error){
-            d_delta_aux = d_delta_aux + d_beta_timing*error; 
-            d_est_delta = d_est_delta + d_delta_aux + d_alpha_timing*error; 
+            //d_delta_aux = d_delta_aux + d_beta_timing*error; 
+            //d_est_delta = d_est_delta + d_delta_aux + d_alpha_timing*error; 
+            d_delta_aux += (error-d_delta_aux)*0.15;
+            d_est_delta += (d_delta_aux-d_est_delta)*0.15;
         }
 
         void
@@ -356,14 +422,63 @@ namespace gr {
                 gr_complex result_2nd = gr_complex(0.0, 0.0);  
                 int low = (int)floor(d_active_carriers/2.0); 
                 volk_32fc_x2_conjugate_dot_prod_32fc(&result_2nd, &current_channel[low], &previous_channel[low], d_active_carriers-low);
-                float delta_est_error = 1.0/(1.0+((float)d_cp_length)/d_fft_length)/(2.0*M_PI*d_active_carriers/2.0)*std::arg(result_2nd*std::conj(result_1st)) ; 
                 float freq_est_error  = (std::arg(result_1st)+std::arg(result_2nd))/2.0/(1.0+(float)d_cp_length/d_fft_length); 
 
                 // if for any reason the CP position changed, the signal error is wrong and should not be fed to the loop. 
                 if( !d_moved_cp )
                 {
-                    advance_delta_loop(delta_est_error);
                     advance_freq_loop(freq_est_error);
+                }
+
+                // TODO: test.
+                //float delta_est_error = /*1.0/(1.0+((float)d_cp_length)/d_fft_length)/(2.0*M_PI*d_active_carriers/2.0)**/std::arg(result_2nd*std::conj(result_1st));
+                //if( !d_moved_cp )
+                //{
+                //    advance_delta_loop(delta_est_error);
+                //}
+            }
+
+        void
+            ofdm_synchronization_impl::estimate_fine_rate(gr_complex * current_channel, gr_complex * previous_channel)
+            {
+                // the strategy:
+                // 1. sample all pilots
+                // 2. calculate phase diffs
+                // 3. SOMEHOW use that to move the cursor until phase diff is minimum???
+                // for some reason this throws frequency error correction a bit (I think)
+                // resulting in a slight phase change. we track this change and correct it when averaging carriers.
+                float total_delta=0.0f;
+                float total_phase=0.0f;
+                gr_complex last=current_channel[0];
+                for (int i=1; i<d_active_carriers; i++) {
+                  float cur_ch_phase=std::arg(current_channel[i]);
+                  float new_delta=cur_ch_phase-std::arg(last);
+                  float new_phase=cur_ch_phase-std::arg(previous_channel[i]);
+                  if (!std::isnan(new_delta)) {
+                    if (new_delta>M_PI) {
+                      new_delta-=2*M_PI;
+                    } else if (new_delta<-M_PI) {
+                      new_delta+=2*M_PI;
+                    }
+                    total_delta+=new_delta;
+                  }
+                  if (!std::isnan(new_phase)) {
+                    if (new_phase>M_PI) {
+                      new_phase-=2*M_PI;
+                    } else if (new_phase<-M_PI) {
+                      new_phase+=2*M_PI;
+                    }
+                    total_phase+=new_phase;
+                  }
+                  last=current_channel[i];
+                }
+                total_phase/=(float)(d_active_carriers-1);
+
+                // if for any reason the CP position changed, the signal error is wrong and should not be fed to the loop. 
+                if( !d_moved_cp )
+                {
+                    advance_delta_loop(total_delta*0.002);
+                    d_symbol_phase+=(total_phase-d_symbol_phase)*0.01;
                 }
             }
 
@@ -404,15 +519,33 @@ namespace gr {
             ofdm_synchronization_impl::linearly_estimate_channel_taps(int current_symbol, gr_complex * channel_gain)
             {
                 // This method interpolates scattered measurements across one OFDM symbol
-                // It does not use measurements from the previous OFDM symbols (does not use history)
+                // It does not use measurements from the previous OFDM symbols
                 // as it may have encountered a phase change for the current phase only
+                // The next function does so.
+
                 // TODO interpolation is too simple, a new method(s) should be implemented
-                    
+                // nah, it's fine. once we can employ all four symbols it's completely fine.
+
+                // perform estimation of the carrier prior to the first one
+                gr_complex tg_alpha; 
+                //if (current_symbol>0){
+                    // we have not updated the gain on the first carriers
+                    // we now do this with a very simple linear interpolator 
+                    // TODO is this a good estimation??
+                    // TODO get rid of this once we can start using four symbols
+                    int current_sp_carrier = 3*current_symbol+CH_GAIN_FIRST;
+                    int next_sp_carrier = 12+3*current_symbol+CH_GAIN_FIRST;
+                    tg_alpha = (channel_gain[next_sp_carrier] - channel_gain[current_sp_carrier]);
+                    // store it
+                    channel_gain[current_sp_carrier-12] = channel_gain[current_sp_carrier] - tg_alpha;
+                //}
+
+                // now interpolate 
                 // Current sp carrier
-                int current_sp_carrier = 3*current_symbol; 
+                current_sp_carrier = 3*current_symbol + (CH_GAIN_FIRST - 12); 
                 // Next sp carrier
-                int next_sp_carrier = 12 + 3*current_symbol; 
-                for (int i = 0; i < d_sp_carriers_size-1; i++)
+                next_sp_carrier = 12 + 3*current_symbol + (CH_GAIN_FIRST - 12); 
+                for (int i = -1; i < d_sp_carriers_size-1; i++)
                 {
 
                     volk_32fc_s32fc_multiply_32fc(d_aux_linear_estimate_first, d_coeffs_linear_estimate_first, channel_gain[current_sp_carrier], 11); 
@@ -426,30 +559,125 @@ namespace gr {
                     next_sp_carrier += 12;
 
                 }
+
                 /////////////////////////////////////////////////////////////
-                //take care of extreme cases: first carriers and last carriers
+                //take care of an extreme case: the last carriers
                 /////////////////////////////////////////////////////////////
                 //I did not optimize this part since they're only a few carriers
-                
+                // we will use the last SP and the CP
+                current_sp_carrier = 12*(d_sp_carriers_size-1)+3*current_symbol+CH_GAIN_FIRST;
+                next_sp_carrier = d_active_carriers+CH_GAIN_FIRST-1;
+                float delta_carriers =(float) next_sp_carrier-current_sp_carrier;
+                for (int j = 1; j < delta_carriers; j++)
+                {
+                    channel_gain[current_sp_carrier+j] = channel_gain[current_sp_carrier]*gr_complex(1.0-j/delta_carriers,0.0) +  channel_gain[next_sp_carrier]*gr_complex(j/delta_carriers,0.0) ;
+                }
+
+                // move the CP to the end
+                channel_gain[d_active_carriers+CH_GAIN_FIRST-1]=channel_gain[d_active_carriers+CH_GAIN_PAD-1];
+            }
+
+        void 
+            ofdm_synchronization_impl::linearly_estimate_channel_taps_3(gr_complex * channel_gain)
+            {
+                // This here interpolates pilots of all four OFDM symbols.
+                // It assumes we're perfectly locked into the symbol and phase
+                // isn't changing due to sample rate error.
+                // The result should only be used for equalization and not
+                // frequency/rate tracking!
+
+                // TODO: enable the rotation code at some point
+                // first rotate previous symbols in order to account for phase changes
+                gr_complex* where=&channel_gain[CH_GAIN_FIRST];
+                gr_complex rot=gr_complex(cos(d_symbol_phase*1.33333),sin(d_symbol_phase*1.33333));
+
+                for (int i=CH_GAIN_FIRST, current_symbol=0; i<CH_GAIN_FIRST+d_active_carriers; i+=3) {
+                  // don't touch current symbols
+                  if (current_symbol==d_current_symbol) {
+                    current_symbol=(current_symbol+1)&3;
+                    where+=3;
+                    continue;
+                  }
+
+                  // now add phase offset
+                  where[0]*=rot;
+                  current_symbol=(current_symbol+1)&3;
+                  where+=3;
+                }
+
+                // TODO: VOLK-ize
+                where=&channel_gain[CH_GAIN_FIRST];
+                for (int i=CH_GAIN_FIRST; i<CH_GAIN_FIRST+d_active_carriers; i+=3) {
+                  const gr_complex delta=(where[3]-where[0]);
+                  where[1]=where[0]+(delta)*(1.0f/3.0f);
+                  where[2]=where[0]+(delta)*(2.0f/3.0f);
+
+                  where+=3;
+                }
+            }
+
+        void 
+            ofdm_synchronization_impl::cubicly_estimate_channel_taps(int current_symbol, gr_complex * channel_gain)
+            {
+                // This method interpolates scattered measurements across one OFDM symbol
+                // It does not use measurements from the previous OFDM symbols (does not use history)
+                // as it may have encountered a phase change for the current phase only
+                // TODO test (it may or may not work better than linear interpolation)
+                    
+                int sp_carrier[4];
+                for (int i=0; i<4; i++) {
+                  sp_carrier[i]=(12*(i-1))+3*current_symbol+(CH_GAIN_FIRST-12);
+                }
+
+                // perform estimation of the carrier prior to the first one
                 gr_complex tg_alpha; 
-                if (current_symbol>0){
+                //if (current_symbol>0){
                     //we have not updated the gain on the first carriers
                     //we now do this with a very simple linear interpolator 
                     //TODO is this a good estimation??
-                    current_sp_carrier = 3*current_symbol;
-                    next_sp_carrier = 12+3*current_symbol;
-                    tg_alpha = (channel_gain[next_sp_carrier] - channel_gain[current_sp_carrier]) / gr_complex(next_sp_carrier-current_sp_carrier, 0.0);
-                    // Calculate interpolation for all intermediate values
-                    for (int j = -current_sp_carrier; j < 0; j++)
+                    // yes it is! however I will implement a phase locking algorithm later for ml_sync
+                    int current_sp_carrier = 3*current_symbol+CH_GAIN_FIRST;
+                    int next_sp_carrier = 12+3*current_symbol+CH_GAIN_FIRST;
+                    tg_alpha = (channel_gain[next_sp_carrier] - channel_gain[current_sp_carrier]);
+                    // store it
+                    channel_gain[current_sp_carrier-12] = channel_gain[current_sp_carrier] - tg_alpha;
+                    // just copy
+                    channel_gain[current_sp_carrier-24] = channel_gain[current_sp_carrier] - tg_alpha * gr_complex(1.0,0.0);
+                //}
+
+                for (int i = -1; i < d_sp_carriers_size-1; i++)
+                {
+
+                    volk_32fc_s32fc_multiply_32fc(d_aux_cubic_estimate[0], d_coeffs_cubic_estimate[0], channel_gain[sp_carrier[0]], 11); 
+                    volk_32fc_s32fc_multiply_32fc(d_aux_cubic_estimate[1], d_coeffs_cubic_estimate[1], channel_gain[sp_carrier[1]], 11); 
+                    volk_32fc_s32fc_multiply_32fc(d_aux_cubic_estimate[2], d_coeffs_cubic_estimate[2], channel_gain[sp_carrier[2]], 11); 
+                    volk_32fc_s32fc_multiply_32fc(d_aux_cubic_estimate[3], d_coeffs_cubic_estimate[3], channel_gain[sp_carrier[3]], 11); 
+
+                    for (int j = 1; j < 12; j++)
                     {
-                        channel_gain[current_sp_carrier+j] = channel_gain[current_sp_carrier] + tg_alpha * gr_complex(j, 0.0);
+                        channel_gain[sp_carrier[1]+j] = (
+                          d_aux_cubic_estimate[0][j-1] +
+                          d_aux_cubic_estimate[1][j-1] +
+                          d_aux_cubic_estimate[2][j-1] +
+                          d_aux_cubic_estimate[3][j-1]
+                        );
                     }
+ 
+                    sp_carrier[0] += 12;
+                    sp_carrier[1] += 12;
+                    sp_carrier[2] += 12;
+                    sp_carrier[3] += 12;
+
                 }
 
-                // now the other extreme case: the last carriers. 
+                // the rest...
+                /////////////////////////////////////////////////////////////
+                //take care of an extreme case: the last carriers
+                /////////////////////////////////////////////////////////////
+                //I did not optimize this part since they're only a few carriers
                 // we will use the last SP and the CP
-                current_sp_carrier = 12*(d_sp_carriers_size-1)+3*current_symbol;
-                next_sp_carrier = d_active_carriers-1;
+                current_sp_carrier = 12*(d_sp_carriers_size-1)+3*current_symbol+CH_GAIN_FIRST;
+                next_sp_carrier = d_active_carriers+CH_GAIN_FIRST-1;
                 float delta_carriers =(float) next_sp_carrier-current_sp_carrier;
                 for (int j = 1; j < delta_carriers; j++)
                 {
@@ -457,16 +685,108 @@ namespace gr {
                 }
             }
 
+        void 
+            ofdm_synchronization_impl::fir_estimate_channel_taps(int current_symbol, gr_complex * channel_gain)
+            {
+                // why does linear interpolation work better than this? what's going on!
+                int sp_carrier[8];
+                for (int i=0; i<8; i++) {
+                  sp_carrier[i]=(12*(i-3))+3*current_symbol+(CH_GAIN_FIRST-12);
+                }
+
+                // perform estimation of the carrier prior to the first one
+                gr_complex tg_alpha; 
+                //if (current_symbol>0){
+                    //we have not updated the gain on the first carriers
+                    //we now do this with a very simple linear interpolator 
+                    //TODO is this a good estimation??
+                    // yes it is! however I will implement a phase locking algorithm later for ml_sync
+                    int current_sp_carrier = 3*current_symbol+CH_GAIN_FIRST;
+                    int next_sp_carrier = 12+3*current_symbol+CH_GAIN_FIRST;
+                    tg_alpha = (channel_gain[next_sp_carrier] - channel_gain[current_sp_carrier]);
+                    // store it
+                    channel_gain[current_sp_carrier-12] = channel_gain[current_sp_carrier] - tg_alpha;
+                    // just copy
+                    channel_gain[current_sp_carrier-24] = channel_gain[current_sp_carrier] - tg_alpha * gr_complex(0.5,0.0);
+                    channel_gain[current_sp_carrier-36] = channel_gain[current_sp_carrier] - tg_alpha * gr_complex(0.2,0.0);
+                    channel_gain[current_sp_carrier-48] = channel_gain[current_sp_carrier] - tg_alpha * gr_complex(0.1,0.0);
+                //}
+
+                for (int i = -1; i < d_sp_carriers_size; i++)
+                {
+
+                    for (int j=0; j<8; j++) volk_32fc_s32fc_multiply_32fc(d_aux_fir_estimate[j], d_coeffs_fir_estimate[j], channel_gain[sp_carrier[j]], 11);
+
+                    for (int j = 1; j < 12; j++)
+                    {
+                        channel_gain[sp_carrier[3]+j] = (
+                          d_aux_fir_estimate[0][j-1] +
+                          d_aux_fir_estimate[1][j-1] +
+                          d_aux_fir_estimate[2][j-1] +
+                          d_aux_fir_estimate[3][j-1] +
+                          d_aux_fir_estimate[4][j-1] +
+                          d_aux_fir_estimate[5][j-1] +
+                          d_aux_fir_estimate[6][j-1] +
+                          d_aux_fir_estimate[7][j-1]
+                        );
+                    }
+ 
+                    for (int j=0; j<8; j++) sp_carrier[j] += 12;
+
+                }
+            }
+
         void ofdm_synchronization_impl::calculate_channel_taps_sp(const gr_complex * in, int current_symbol, gr_complex * channel_gain)
         {
-            // We first calculate the channel gain on the SP carriers.
-            // We get each sp carrier position. We now know which is the current symbol (0, 1, 2 or 3)
-            for (int current_sp_carrier = 3*current_symbol; current_sp_carrier<d_active_carriers-1; current_sp_carrier+=12)
-            {
-                channel_gain[current_sp_carrier] = in[current_sp_carrier]/d_pilot_values[current_sp_carrier];
+            // check whether we need to acquire initial pilot gains.
+            // once we have them, we can smooth out the four-symbol version of
+            // pilot gains.
+            if (d_channel_gain_fill[current_symbol]>0) {
+              // we don't have gain for this symbol, so acquire it.
+
+              // We first calculate the channel gain on the SP carriers.
+              // We get each sp carrier position. We now know which is the current symbol (0, 1, 2 or 3)
+              for (int current_sp_carrier = 3*current_symbol, target_sp_carrier = current_sp_carrier + CH_GAIN_FIRST; current_sp_carrier<d_active_carriers-1; current_sp_carrier+=12, target_sp_carrier+=12)
+              {
+                  channel_gain[target_sp_carrier] = d_channel_gain_avg[target_sp_carrier] = in[current_sp_carrier]/d_pilot_values[current_sp_carrier];
+              }
+              // we then calculate the gain on the CP
+              channel_gain[d_active_carriers+CH_GAIN_FIRST-1] = d_channel_gain_avg[d_active_carriers+CH_GAIN_FIRST-1] = in[d_active_carriers-1]/d_pilot_values[d_active_carriers-1];
+
+              // keep going for a couple more symbols
+              if (d_symbol_acq) {
+                d_channel_gain_fill[current_symbol]--;
+              }
+            } else {
+              // if we are here, we have gone through enough symbols to start
+              // the averaging process.
+
+              // We first calculate the channel gain on the SP carriers.
+              // We get each sp carrier position. We now know which is the current symbol (0, 1, 2 or 3)
+              for (int current_sp_carrier = 3*current_symbol, target_sp_carrier = current_sp_carrier + CH_GAIN_FIRST; current_sp_carrier<d_active_carriers-1; current_sp_carrier+=12, target_sp_carrier+=12)
+              {
+                  const gr_complex gain = in[current_sp_carrier]/d_pilot_values[current_sp_carrier];
+                  //const gr_complex last = d_channel_gain_avg[target_sp_carrier];
+                  channel_gain[target_sp_carrier] = gain;
+                  d_channel_gain_avg[target_sp_carrier] = gain;
+                  /*d_channel_gain_avg[target_sp_carrier] = gr_complex(
+                    last.real()*(0.0f/4.0f)+gain.real()*(4.0f/4.0f),
+                    last.imag()*(0.0f/4.0f)+gain.imag()*(4.0f/4.0f)
+                  );*/
+              }
+              // we then calculate the gain on the CP
+              // TODO: average this too?
+              channel_gain[d_active_carriers+CH_GAIN_FIRST-1] = d_channel_gain_avg[d_active_carriers+CH_GAIN_FIRST-1] = in[d_active_carriers-1]/d_pilot_values[d_active_carriers-1];
             }
-            //we then calculate the gain on the CP
-            channel_gain[d_active_carriers-1] = in[d_active_carriers-1]/d_pilot_values[d_active_carriers-1];
+
+            // copy the CP to pad
+            for (int i=d_active_carriers+CH_GAIN_FIRST; i<d_active_carriers+CH_GAIN_PAD; i++) {
+              channel_gain[i] = channel_gain[d_active_carriers+CH_GAIN_FIRST-1];
+            }
+
+            for (int i=d_active_carriers+CH_GAIN_FIRST; i<d_active_carriers+CH_GAIN_PAD; i++) {
+              d_channel_gain_avg[i] = d_channel_gain_avg[d_active_carriers+CH_GAIN_FIRST-1];
+            }
        }
 
 
@@ -589,15 +909,22 @@ namespace gr {
             ofdm_synchronization_impl::calculate_fft(gr_complex * out)
             {
                 // I assume the input data has already been copied into the calculator's buffer
-                //memcpy(d_fft_calculator.get_inbuf(), in, sizeof(gr_complex)*d_fft_length); 
-                //calculate the FFT
+                // calculate the FFT
                 d_fft_calculator.execute(); 
 
                 // I have to perform an fftshift
-                unsigned int len = (unsigned int)(ceil(d_fft_length/2.0)); 
+                unsigned int len = (unsigned int)(ceil(d_fft_length/2.0));
                 memcpy(&out[0], &d_fft_calculator.get_outbuf()[len], sizeof(gr_complex)*(d_fft_length-len)); 
                 memcpy(&out[d_fft_length-len], &(d_fft_calculator.get_outbuf()[0]), sizeof(gr_complex)*len);
 
+                // fractional time shift to compensate for sampling rate errors.
+                float i_i=-(float)len;
+                const float sh=(2.0*M_PI/(double)d_fft_length)*d_cp_fine;
+                for (unsigned int i=0; i<d_fft_length; i++) {
+                  float x=i_i*sh;
+                  out[i]*=gr_complex(cos(x),sin(x)); //exp(gr_complex(0,i_i*sh));
+                  i_i+=1.0f;
+                }
             }
 
         void
@@ -779,11 +1106,15 @@ namespace gr {
             d_rho = d_snr / (d_snr + 1.0);
 
             d_initial_acquired = false; 
+            d_cp_start = 0;
+            d_cp_speed = 0;
+            d_cp_fine = 0;
 
             d_phaseinc = 0; 
             d_nextphaseinc = 0; 
             d_nextpos = 0; 
             d_phase = 0; 
+            d_symbol_phase = 0; 
             peak_detect_init(0.3, 0.9);
 
             //integer frequency correction part
@@ -808,6 +1139,10 @@ namespace gr {
             d_symbol_acq = false; 
             d_symbol_correct_count = 0;
             d_coarse_freq = 0;
+
+            for (int i=0; i<4; i++) {
+                d_channel_gain_fill[i]=1;
+            }
 
             for(int i=0; i<d_active_carriers; i++)
             {
@@ -850,78 +1185,106 @@ namespace gr {
                 gr_complex *out = (gr_complex *) output_items[0];
 
                 bool ch_output_connected = output_items.size()>=2; 
-                bool freq_error_output_connected = output_items.size()>=3; 
-                bool samp_error_output_connected = output_items.size()>=4; 
+                bool pilot_output_connected = output_items.size()>=3; 
+                bool freq_error_output_connected = output_items.size()>=4; 
+                bool samp_error_output_connected = output_items.size()>=5; 
 
                 gr_complex *out_channel_gain;
+                float *out_pilot_gain;
                 float *out_freq_error;
                 float *out_samp_error;
                 if (ch_output_connected)
                     out_channel_gain = (gr_complex *)output_items[1]; 
+                if (pilot_output_connected)
+                    out_pilot_gain = (float *)output_items[2]; 
                 if (freq_error_output_connected)
-                    out_freq_error = (float *)output_items[2]; 
+                    out_freq_error = (float *)output_items[3]; 
                 if (samp_error_output_connected)
-                    out_samp_error = (float *)output_items[3]; 
+                    out_samp_error = (float *)output_items[4]; 
 
                 d_consumed = 0;
                 d_out = 0;
 
+                //printf("--- %d ... %d\n",noutput_items,nin);
+                int required_for_work = d_cp_length + d_fft_length;
 
                 for (int i = 0; i < noutput_items ; i++) 
                 {
-                    int required_for_interpolation = d_cp_length + d_fft_length; 
 
                     if (!d_initial_acquired)
                     {
                         // If we are here it means that we have no idea where the CP may be. We thus 
                         // search it thoroughly. We also perform a coarse frequency estimation. 
                         //printf("nin: %d d_consumed: %d start: %d stop: %d\n",nin,d_consumed,2 * d_fft_length + d_cp_length - 1, d_fft_length + d_cp_length - 1);
+                        assert(i==0);
+                        //printf("INITIAL ACQUIRING! nin: %d\n",nin);
                         d_initial_acquired = ml_sync(&in[d_consumed], 2 * d_fft_length + d_cp_length - 1, d_fft_length + d_cp_length - 1, nin, &d_cp_start, &d_coarse_freq);
                         d_cp_found = d_initial_acquired; 
-                        //the interpolation should be restarted too (not the correcting factor, 
-                        //which should not have changed, only the phase of the interpolator)
+                        if (d_initial_acquired) {
+                          //printf("initial acquired! at %d\n",d_cp_start);
+                        }
+                        // the interpolation should be restarted too (not the correcting factor, 
+                        // which should not have changed, only the phase of the interpolator)
                         d_samp_phase = 0; 
-                        //d_est_delta = 0; 
+                        d_est_delta = 0; 
+                        d_delta_aux = 0; 
+                        d_freq_aux = 0; 
+                        d_fine_freq = 0; 
+                        d_total_freq_error = 0;
+                        d_symbol_correct_count = 0;
+
+                        // reset everything else as well
+                        d_phaseinc = 0; 
+                        d_nextphaseinc = 0; 
+                        d_nextpos = 0; 
+                        d_phase = 0; 
+                        d_symbol_phase = 0; 
                         
-                        //CP position may have changed
+                        // CP position has changed
+                        d_cp_speed = 0;
+                        d_cp_fine = 0;
                         d_moved_cp = true; 
+
+                        // since the SPs and CPs have moved, the channel gains are going to change as well.
+                        // reset them.
+                        for (int sym=0; sym<4; sym++) {
+                          d_channel_gain_fill[sym]=1;
+                        }
                         
                         // I also have not the least idea of how many samples we dropped, and thus
                         // in which symbol we are. 
                         d_symbol_acq = false;
 
-                        // TODO is necessary to re-calculate the integer frequency?
+                        // it is necessary to re-calculate the integer frequency.
+                        // one rationale for desync is that the user may have changed frequency.
                         d_freq_offset_acq = false;
 
                     }
                     else
                     {
-                        //If we are here it means that in the previous iteration we found the CP. We
-                        //now thus only search near it. In fact, we use this only to check whether the 
-                        //CP is still present (it may well happen that the USRP drops samples in which
-                        //case the peak in the correlation is not present). We thus do not use the corresponding
-                        //estimates of frequency and CP position. 
-                        int cp_start_temp; 
-                        float coarse_freq_temp; 
-                        //printf("nin: %d d_consumed: %d start: %d stop: %d\n",nin,d_consumed,d_cp_start + 8, std::max(d_cp_start - 8,d_cp_length+d_fft_length-1));
-                        d_cp_found = ml_sync(&in[d_consumed], d_cp_start + 16, std::max(d_cp_start - 16,d_cp_length+d_fft_length-1), nin, &cp_start_temp, &coarse_freq_temp);
-                        //d_cp_start = cp_start_temp; 
-                        //d_coarse_freq = coarse_freq_temp; 
+                        // If we are here it means that in the previous iteration we found the CP. We
+                        // use the last value and employ rate error for tracking the CP.
+                        // The frequency error will go haywire upon sync loss, so we use that
+                        // in order to know whether we've lost sync.
+                        d_cp_found=(fabs(d_total_freq_error/(2.0*M_PI))<0.75);
 
                         if ( !d_cp_found )
                         {
-                            // We may have not found the CP because the smaller search range was too small (rare, but possible, in 
-                            // particular when sampling time error are present). We thus re-try with a bigger search range and 
-                            // update d_cp_start. 
-                            //printf("nin: %d d_consumed: %d start: %d stop: %d\n",nin,d_consumed,d_cp_start+16, std::max(d_cp_start-16,d_cp_length+d_fft_length-1));
-                            d_cp_found = ml_sync(&in[d_consumed], d_cp_start+32, std::max(d_cp_start-32,d_cp_length+d_fft_length-1), \
-                                    nin, &d_cp_start, &coarse_freq_temp);
+                            // The CP is no longer within view and the frequency error has gotten out of hand.
+                            // We've lost sync and must start over.
+                            //printf("DESYNC!\n");
                             
                             //Since I'm moving the position, the interpolator's phase should be restarted too
                             d_samp_phase = 0; 
                             
                             //indicate that the CP may have moved position
                             d_moved_cp = true;
+
+                            // since the SPs and CPs have moved, the channel gains are going to change as well.
+                            // reset them.
+                            for (int sym=0; sym<4; sym++) {
+                              d_channel_gain_fill[sym]=1;
+                            }
                         }
 
                     }
@@ -930,28 +1293,18 @@ namespace gr {
                     {
                         // safe-margin. Using a too adjusted CP position may result in taking samples from the NEXT ofdm 
                         // symbol. It is better to stay on the safe-side (plus, 10 samples is nothing in this context). 
+                        // TODO: check whether this is still needed.
                         d_cp_start_offset = -10;  
 
-                        /*
-                           int low = d_consumed + d_cp_start + d_cp_start_offset - d_fft_length + 1 ;
-                           derotate(&in[low], &d_prefft_synched[0]);
-                           */
-
                         int low = d_cp_start + d_cp_start_offset - d_fft_length + 1 ;
+
+                        // check whether we're out of data
+                        // dear tildearrow: you're such a moron. data doesn't come from behind!
+                        if (d_cp_start+required_for_work>nin) {
+                          break;
+                        }
                        
-                        if (d_interpolate) {
-                            // I interpolate the signal with the estimated sampling clock error. 
-                            // The filter used as interpolator has non-causal output (why is beyond my understading). This -3
-                            // solves this issue. TODO why does this happen? better solution?
-                            required_for_interpolation = interpolate_input(&in[d_consumed+low-3], &d_interpolated[0]);
-                            
-                            // I derotate the signal with the estimated frequency error. 
-                            derotate(d_interpolated, d_fft_calculator.get_inbuf());
-                        }
-                        else 
-                        {
-                            derotate(&in[d_consumed+low], d_fft_calculator.get_inbuf());
-                        }
+                        derotate(&in[low], d_fft_calculator.get_inbuf());
 
                         // I (naturally) calculate the FFT. 
                         calculate_fft(d_postfft);
@@ -993,25 +1346,38 @@ namespace gr {
                         linearly_estimate_channel_taps(d_current_symbol, d_channel_gain);
 
                         // Equalization is applied. 
+                        // after a while we've most likely successfully locked into the symbol, so we can
+                        // start averaging and including all four symbols into the channel gain.
+                        // TODO: this code won't be happy with modes other than 3!
+                        //       I haven't tested as there only are one or two
+                        //       non-mode-3 channels in my area.
     
-                        //I now perform a rather indirect complex division with VOLK (plus, I tried to minimize
-                        // the usage of auxilary variables) 
-                        // TODO a new VOLK kernel that makes complex division? Already implemented. 
-                        // However, I'll use what follows instead for compatibility reasons. Uncomment the next line instead
-                        // when its usage is widespread. 
-                        volk_32fc_x2_divide_32fc(&out[i*d_active_carriers], d_integer_freq_derotated, d_channel_gain, d_active_carriers);
-                        
-                        //volk_32fc_x2_multiply_conjugate_32fc(&out[i*d_active_carriers], d_integer_freq_derotated, d_channel_gain, d_active_carriers);
-                        //volk_32fc_magnitude_squared_32f(d_channel_gain_mag_sq, d_channel_gain, d_active_carriers);
-                        //volk_32f_x2_divide_32f(d_channel_gain_mag_sq, d_ones, d_channel_gain_mag_sq, d_active_carriers);
-                        //volk_32fc_32f_multiply_32fc(&out[i*d_active_carriers], &out[i*d_active_carriers], d_channel_gain_mag_sq, d_active_carriers);
-                        // Using what follows instead, is actually slower (seems that taking powers is worse than simply dividing).
-                        //volk_32fc_s32f_power_32fc(d_channel_gain_inv, d_channel_gain, -1.0, d_active_carriers);
-                        //volk_32fc_x2_multiply_32fc(&out[i*d_active_carriers], d_integer_freq_derotated, d_channel_gain_inv, d_active_carriers);
+                        // I now perform a rather indirect complex division with VOLK
+                        if (d_symbol_correct_count==SYMBOLS_BEFORE_AVG) {
+                          printf("we can use smooth channel gain now.\n");
+                        }
+                        if (d_symbol_correct_count>=SYMBOLS_BEFORE_AVG) {
+                          // using average
+                          linearly_estimate_channel_taps_3(d_channel_gain_avg);
+                          d_symbol_correct_count=SYMBOLS_BEFORE_AVG+1;
+                          volk_32fc_x2_divide_32fc(&out[i*d_active_carriers], d_integer_freq_derotated, &d_channel_gain_avg[CH_GAIN_FIRST], d_active_carriers);
+                        } else {
+                          // using rough estimate
+                          volk_32fc_x2_divide_32fc(&out[i*d_active_carriers], d_integer_freq_derotated, &d_channel_gain[CH_GAIN_FIRST], d_active_carriers);
+                        }
 
                         if (ch_output_connected){
                             // the channel taps output is connected
-                            memcpy(&out_channel_gain[i*d_active_carriers], d_channel_gain, d_active_carriers*sizeof(gr_complex));
+                            if (d_symbol_correct_count>=SYMBOLS_BEFORE_AVG) {
+                              memcpy(&out_channel_gain[i*d_active_carriers], &d_channel_gain_avg[CH_GAIN_FIRST], d_active_carriers*sizeof(gr_complex));
+                            } else {
+                              memcpy(&out_channel_gain[i*d_active_carriers], &d_channel_gain[CH_GAIN_FIRST], d_active_carriers*sizeof(gr_complex));
+                            }
+                        }
+
+                        if (pilot_output_connected) {
+                          // the pilot gain output is connected
+                          memcpy(&out_pilot_gain[i*d_active_carriers], &d_channel_gain_mag[CH_GAIN_FIRST], d_active_carriers*sizeof(float));
                         }
 
                         if(freq_error_output_connected)
@@ -1027,8 +1393,36 @@ namespace gr {
                         // it includes coarse frequency, fine frequency AND integer frequency offset. 
                         d_total_freq_error = d_fine_freq + d_coarse_freq + M_PI*2*d_freq_offset; 
 
-                        // I update the fine timing and frequency estimations. 
-                        estimate_fine_synchro(d_channel_gain, d_previous_channel_gain); 
+                        // I update the fine frequency estimations. 
+                        estimate_fine_synchro(&d_channel_gain[CH_GAIN_FIRST], &d_previous_channel_gain[CH_GAIN_FIRST]);
+
+                        // estimate timing now
+                        estimate_fine_rate(&d_channel_gain[CH_GAIN_FIRST], &d_previous_channel_gain[CH_GAIN_FIRST]);
+                        // copy this symbol
+                        //memcpy(&d_previous_zero_gain[CH_GAIN_FIRST], &which_gain[CH_GAIN_FIRST], d_active_carriers*sizeof(gr_complex));
+
+                        // use sample rate error to correct CP position.
+                        //d_cp_speed-=d_est_delta;
+                        d_cp_fine-=d_est_delta;
+                        //d_cp_fine+=d_cp_speed;
+                        //printf("d_est_delta: %f - d_cp_fine: %f - freq_error: %f\n",d_est_delta,d_cp_fine,d_total_freq_error);
+                        if (d_cp_fine<0.0) {
+                          while (d_cp_fine<0.0) {
+                            d_cp_fine+=1.0;
+                            d_cp_start--;
+                          }
+                        } else {
+                          while (d_cp_fine>=1.0) {
+                            d_cp_fine-=1.0;
+                            d_cp_start++;
+                          }
+                        }
+
+                        // Write some debug information.
+                        if (++d_debug_print>=200) {
+                          d_debug_print=0;
+                          printf("position: %d, %f - freq/rate err: %f/%f - phase err: %f\n",d_cp_start,d_cp_fine,d_total_freq_error/(2*M_PI),d_est_delta,d_symbol_phase);
+                        }
 
                         d_out += 1; 
 
@@ -1051,22 +1445,36 @@ namespace gr {
                         // bye!
                         return (d_out);
                     }
-                    d_consumed += required_for_interpolation;
+                    d_consumed += required_for_work;
 
-                    int delta_pos = required_for_interpolation - (d_fft_length+d_cp_length);
+                    int delta_pos = required_for_work - (d_fft_length+d_cp_length);
                     d_moved_cp = (delta_pos!=0);
+                    if (d_moved_cp) printf("moved!\n");
+
+                    if (d_cp_found) {
+                      d_cp_start+=required_for_work;
+                      if (i+1<noutput_items) {
+                        //printf("moving to %d - we gotta do again (%d/%d)\n",d_cp_start,i,noutput_items);
+                      }
+                    }
+                }
+
+                if (d_cp_found) {
+                  if (d_cp_start-required_for_work-d_fft_length-d_cp_length<512) {
+                    printf("consuming less to avoid oversatiation.\n");
+                    d_consumed-=(d_cp_length+d_fft_length)/2;
+                  }
+
+                  d_cp_start-=d_consumed;
+                  while (d_cp_start<0) {
+                    printf("start<0! (%d) increasing.\n",d_cp_start);
+                    d_cp_start+=required_for_work;
+                  }
                 }
 
                 // Tell runtime system how many input items we consumed on
                 // each input stream.
                 consume_each(d_consumed);
-
-                // Write some debug information.
-                if (++d_debug_print>=100) {
-                  d_debug_print=0;
-
-                  //printf("d_consumed: %d... phaseinc: %f  nextphaseinc: %f  nextpos: %d  phase: %f\n",d_consumed,d_phaseinc,d_nextphaseinc,d_nextpos,d_phase);
-                }
 
                // Tell runtime system how many output items we produced.
                 return (d_out);
