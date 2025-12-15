@@ -77,6 +77,9 @@ it is capable of demodulating the complete and 1-seg ISDB-T spectrum. we foresee
       - you may want to configure the rest of parameters, but don't worry. it's only the bit deinterleaver that requires manual setup.
     - in case something goes wrong, hit the Reset button.
   - the output is a Transport Stream file which may be played by a compatible media player such as ffplay or mpv. if you're using the pipe, ffplay will be started and a couple seconds after data goes through you should be able to watch the live broadcast/transmission.
+- **Complete, complete (for real this time) decoding of all three layers.**
+  - if your CPU is fast enough, the `examples/rx_demo_multi.grc` example contains a full decoder for all three layers.
+  - load it, set the parameters up, adjust the bit deinterleavers and you should have three files containing separate layers.
 - **Signal analyzer.**
   - the original objective with the project is to develop a relatively inexpensive ISDB-T measurement equipment. there was an example for this, but it's no longer there.
 
