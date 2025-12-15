@@ -51,6 +51,31 @@ struct branchtab27 {
 
 namespace gr {
     namespace isdbt {
+        // this struct must be aligned to 16.
+        struct viterbi_decoder_internal {
+#ifdef DTV_SSE2
+                __m128i d_metric0[4];
+                __m128i d_metric1[4];
+                __m128i d_path0[4];
+                __m128i d_path1[4];
+#else
+                unsigned char d_metric0_generic[64];
+                unsigned char d_metric1_generic[64];
+                unsigned char d_path0_generic[64];
+                unsigned char d_path1_generic[64];
+#endif
+
+#ifdef DTV_SSE2
+                branchtab27 Branchtab27_sse2[2];
+#else
+                branchtab27 Branchtab27_generic[2];
+#endif
+
+                // Metrics for each state
+                unsigned char mmresult[64];
+                // Paths for each state
+                unsigned char ppresult[TRACEBACK_MAX][64];
+        };
 
         class viterbi_decoder_impl : public viterbi_decoder
         {
@@ -64,28 +89,7 @@ namespace gr {
                 static const unsigned char d_puncture_7_8[];
                 static const unsigned char d_Partab[];
 
-#ifdef DTV_SSE2
-                static __m128i d_metric0[4];
-                static __m128i d_metric1[4];
-                static __m128i d_path0[4];
-                static __m128i d_path1[4];
-#else
-                static unsigned char d_metric0_generic[64];
-                static unsigned char d_metric1_generic[64];
-                static unsigned char d_path0_generic[64];
-                static unsigned char d_path1_generic[64];
-#endif
-
-#ifdef DTV_SSE2
-                static branchtab27 Branchtab27_sse2[2];
-#else
-                static branchtab27 Branchtab27_generic[2];
-#endif
-
-                // Metrics for each state
-                static unsigned char mmresult[64];
-                // Paths for each state
-                static unsigned char ppresult[TRACEBACK_MAX][64];
+                viterbi_decoder_internal* state;
 
                 // Current puncturing vector
                 const unsigned char* d_puncture;

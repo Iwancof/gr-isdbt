@@ -25,6 +25,8 @@
 
 #include "viterbi_decoder_impl.h"
 #include <gnuradio/io_signature.h>
+// for aligned alloc
+#include <volk/volk.h>
 
 namespace gr {
     namespace isdbt {
@@ -55,28 +57,6 @@ namespace gr {
         };
 
 #ifdef DTV_SSE2
-        __GR_ATTR_ALIGNED(16) __m128i viterbi_decoder_impl::d_metric0[4];
-        __GR_ATTR_ALIGNED(16) __m128i viterbi_decoder_impl::d_metric1[4];
-        __GR_ATTR_ALIGNED(16) __m128i viterbi_decoder_impl::d_path0[4];
-        __GR_ATTR_ALIGNED(16) __m128i viterbi_decoder_impl::d_path1[4];
-#else
-        __GR_ATTR_ALIGNED(16) unsigned char viterbi_decoder_impl::d_metric0_generic[64];
-        __GR_ATTR_ALIGNED(16) unsigned char viterbi_decoder_impl::d_metric1_generic[64];
-        __GR_ATTR_ALIGNED(16) unsigned char viterbi_decoder_impl::d_path0_generic[64];
-        __GR_ATTR_ALIGNED(16) unsigned char viterbi_decoder_impl::d_path1_generic[64];
-#endif
-
-#ifdef DTV_SSE2
-        __GR_ATTR_ALIGNED(16) branchtab27 viterbi_decoder_impl::Branchtab27_sse2[2];
-#else
-        __GR_ATTR_ALIGNED(16) branchtab27 viterbi_decoder_impl::Branchtab27_generic[2];
-#endif
-
-        __GR_ATTR_ALIGNED(16) unsigned char viterbi_decoder_impl::mmresult[64];
-        __GR_ATTR_ALIGNED(16)
-            unsigned char viterbi_decoder_impl::ppresult[TRACEBACK_MAX][64];
-
-#ifdef DTV_SSE2
         void viterbi_decoder_impl::viterbi_chunks_init_sse2(__m128i* mm0, __m128i* pp0)
         {
 #else
@@ -95,9 +75,9 @@ namespace gr {
 
                 int polys[2] = { POLYA, POLYB };
                 for (i = 0; i < 32; i++) {
-                    Branchtab27_sse2[0].c[i] =
+                    state->Branchtab27_sse2[0].c[i] =
                         (polys[0] < 0) ^ d_Partab[(2 * i) & abs(polys[0])] ? 1 : 0;
-                    Branchtab27_sse2[1].c[i] =
+                    state->Branchtab27_sse2[1].c[i] =
                         (polys[1] < 0) ^ d_Partab[(2 * i) & abs(polys[1])] ? 1 : 0;
                 }
 #else
@@ -108,17 +88,17 @@ namespace gr {
 
                 int polys[2] = { POLYA, POLYB };
                 for (i = 0; i < 32; i++) {
-                    Branchtab27_generic[0].c[i] =
+                    state->Branchtab27_generic[0].c[i] =
                         (polys[0] < 0) ^ d_Partab[(2 * i) & abs(polys[0])] ? 1 : 0;
-                    Branchtab27_generic[1].c[i] =
+                    state->Branchtab27_generic[1].c[i] =
                         (polys[1] < 0) ^ d_Partab[(2 * i) & abs(polys[1])] ? 1 : 0;
                 }
 #endif
 
                 for (i = 0; i < 64; i++) {
-                    mmresult[i] = 0;
+                    state->mmresult[i] = 0;
                     for (j = 0; j < TRACEBACK_MAX; j++) {
-                        ppresult[j][i] = 0;
+                        state->ppresult[j][i] = 0;
                     }
                 }
             }
@@ -150,14 +130,14 @@ namespace gr {
 
                 for (i = 0; i < 2; i++) {
                     if (symbols[0] == 2) {
-                        metsvm = _mm_xor_si128(Branchtab27_sse2[1].v[i], sym1v);
+                        metsvm = _mm_xor_si128(state->Branchtab27_sse2[1].v[i], sym1v);
                         metsv = _mm_sub_epi8(_mm_set1_epi8(1), metsvm);
                     } else if (symbols[1] == 2) {
-                        metsvm = _mm_xor_si128(Branchtab27_sse2[0].v[i], sym0v);
+                        metsvm = _mm_xor_si128(state->Branchtab27_sse2[0].v[i], sym0v);
                         metsv = _mm_sub_epi8(_mm_set1_epi8(1), metsvm);
                     } else {
-                        metsvm = _mm_add_epi8(_mm_xor_si128(Branchtab27_sse2[0].v[i], sym0v),
-                                _mm_xor_si128(Branchtab27_sse2[1].v[i], sym1v));
+                        metsvm = _mm_add_epi8(_mm_xor_si128(state->Branchtab27_sse2[0].v[i], sym0v),
+                                _mm_xor_si128(state->Branchtab27_sse2[1].v[i], sym1v));
                         metsv = _mm_sub_epi8(_mm_set1_epi8(2), metsvm);
                     }
 
@@ -199,14 +179,14 @@ namespace gr {
 
                 for (i = 0; i < 2; i++) {
                     if (symbols[2] == 2) {
-                        metsvm = _mm_xor_si128(Branchtab27_sse2[1].v[i], sym1v);
+                        metsvm = _mm_xor_si128(state->Branchtab27_sse2[1].v[i], sym1v);
                         metsv = _mm_sub_epi8(_mm_set1_epi8(1), metsvm);
                     } else if (symbols[3] == 2) {
-                        metsvm = _mm_xor_si128(Branchtab27_sse2[0].v[i], sym0v);
+                        metsvm = _mm_xor_si128(state->Branchtab27_sse2[0].v[i], sym0v);
                         metsv = _mm_sub_epi8(_mm_set1_epi8(1), metsvm);
                     } else {
-                        metsvm = _mm_add_epi8(_mm_xor_si128(Branchtab27_sse2[0].v[i], sym0v),
-                                _mm_xor_si128(Branchtab27_sse2[1].v[i], sym1v));
+                        metsvm = _mm_add_epi8(_mm_xor_si128(state->Branchtab27_sse2[0].v[i], sym0v),
+                                _mm_xor_si128(state->Branchtab27_sse2[1].v[i], sym1v));
                         metsv = _mm_sub_epi8(_mm_set1_epi8(2), metsvm);
                     }
 
@@ -273,18 +253,18 @@ namespace gr {
                 for (i = 0; i < 2; i++) {
                     if (symbols[0] == 2) {
                         for (j = 0; j < 16; j++) {
-                            metsvm[j] = Branchtab27_generic[1].c[(i * 16) + j] ^ sym1v[j];
+                            metsvm[j] = state->Branchtab27_generic[1].c[(i * 16) + j] ^ sym1v[j];
                             metsv[j] = 1 - metsvm[j];
                         }
                     } else if (symbols[1] == 2) {
                         for (j = 0; j < 16; j++) {
-                            metsvm[j] = Branchtab27_generic[0].c[(i * 16) + j] ^ sym0v[j];
+                            metsvm[j] = state->Branchtab27_generic[0].c[(i * 16) + j] ^ sym0v[j];
                             metsv[j] = 1 - metsvm[j];
                         }
                     } else {
                         for (j = 0; j < 16; j++) {
-                            metsvm[j] = (Branchtab27_generic[0].c[(i * 16) + j] ^ sym0v[j]) +
-                                (Branchtab27_generic[1].c[(i * 16) + j] ^ sym1v[j]);
+                            metsvm[j] = (state->Branchtab27_generic[0].c[(i * 16) + j] ^ sym0v[j]) +
+                                (state->Branchtab27_generic[1].c[(i * 16) + j] ^ sym1v[j]);
                             metsv[j] = 2 - metsvm[j];
                         }
                     }
@@ -359,18 +339,18 @@ namespace gr {
                 for (i = 0; i < 2; i++) {
                     if (symbols[2] == 2) {
                         for (j = 0; j < 16; j++) {
-                            metsvm[j] = Branchtab27_generic[1].c[(i * 16) + j] ^ sym1v[j];
+                            metsvm[j] = state->Branchtab27_generic[1].c[(i * 16) + j] ^ sym1v[j];
                             metsv[j] = 1 - metsvm[j];
                         }
                     } else if (symbols[3] == 2) {
                         for (j = 0; j < 16; j++) {
-                            metsvm[j] = Branchtab27_generic[0].c[(i * 16) + j] ^ sym0v[j];
+                            metsvm[j] = state->Branchtab27_generic[0].c[(i * 16) + j] ^ sym0v[j];
                             metsv[j] = 1 - metsvm[j];
                         }
                     } else {
                         for (j = 0; j < 16; j++) {
-                            metsvm[j] = (Branchtab27_generic[0].c[(i * 16) + j] ^ sym0v[j]) +
-                                (Branchtab27_generic[1].c[(i * 16) + j] ^ sym1v[j]);
+                            metsvm[j] = (state->Branchtab27_generic[0].c[(i * 16) + j] ^ sym0v[j]) +
+                                (state->Branchtab27_generic[1].c[(i * 16) + j] ^ sym1v[j]);
                             metsv[j] = 2 - metsvm[j];
                         }
                     }
@@ -458,29 +438,29 @@ namespace gr {
 #ifdef DTV_SSE2
                     // TODO - find another way to extract the value
                     for (i = 0; i < 4; i++) {
-                        _mm_store_si128((__m128i*)&mmresult[i * 16], mm0[i]);
-                        _mm_store_si128((__m128i*)&ppresult[store_pos][i * 16], pp0[i]);
+                        _mm_store_si128((__m128i*)&state->mmresult[i * 16], mm0[i]);
+                        _mm_store_si128((__m128i*)&state->ppresult[store_pos][i * 16], pp0[i]);
                     }
 #else
                     for (i = 0; i < 4; i++) {
                         for (j = 0; j < 16; j++) {
-                            mmresult[(i * 16) + j] = mm0[(i * 16) + j];
-                            ppresult[store_pos][(i * 16) + j] = pp0[(i * 16) + j];
+                            state->mmresult[(i * 16) + j] = mm0[(i * 16) + j];
+                            state->ppresult[store_pos][(i * 16) + j] = pp0[(i * 16) + j];
                         }
                     }
 #endif
 
                     // Find out the best final state
-                    bestmetric = mmresult[beststate];
-                    minmetric = mmresult[beststate];
+                    bestmetric = state->mmresult[beststate];
+                    minmetric = state->mmresult[beststate];
 
                     for (i = 1; i < 64; i++) {
-                        if (mmresult[i] > bestmetric) {
-                            bestmetric = mmresult[i];
+                        if (state->mmresult[i] > bestmetric) {
+                            bestmetric = state->mmresult[i];
                             beststate = i;
                         }
-                        if (mmresult[i] < minmetric) {
-                            minmetric = mmresult[i];
+                        if (state->mmresult[i] < minmetric) {
+                            minmetric = state->mmresult[i];
                         }
                     }
 
@@ -489,12 +469,12 @@ namespace gr {
                         // Obtain the state from the output bits
                         // by clocking in the output bits in reverse order.
                         // The state has only 6 bits
-                        beststate = ppresult[pos][beststate] >> 2;
+                        beststate = state->ppresult[pos][beststate] >> 2;
                         pos = (pos - 1 + ntraceback) % ntraceback;
                     }
 
                     // Store output byte
-                    *outbuf = ppresult[pos][beststate];
+                    *outbuf = state->ppresult[pos][beststate];
 
 #ifdef DTV_SSE2
                     // Zero out the path variable
@@ -545,6 +525,7 @@ namespace gr {
                     //d_init(0),
                     //store_pos(0)
                 {
+                    state=(viterbi_decoder_internal*)volk_malloc(sizeof(viterbi_decoder_internal),16);
                     // d_k: the input of the encoder
                     // d_n: the output of the encoder
                     // d_puncture: depuncturing matrix
@@ -563,7 +544,7 @@ namespace gr {
                 /*
                  * Our virtual destructor.
                  */
-                viterbi_decoder_impl::~viterbi_decoder_impl() { delete[] d_inbits; }
+                viterbi_decoder_impl::~viterbi_decoder_impl() { delete[] d_inbits; volk_free(state); }
 
                 void viterbi_decoder_impl::init_params() {
                     switch (d_rate){
@@ -653,10 +634,10 @@ namespace gr {
                     mettab[1][1] = 1;
 
 #ifdef DTV_SSE2
-                    viterbi_chunks_init_sse2(d_metric0, d_path0);
+                    viterbi_chunks_init_sse2(state->d_metric0, state->d_path0);
                     printf("[Viterbi decoder] Choosing SSE2 implementation\n");
 #else
-                    viterbi_chunks_init_generic(d_metric0_generic, d_path0_generic);
+                    viterbi_chunks_init_generic(state->d_metric0_generic, state->d_path0_generic);
                     printf("[Viterbi decoder] Choosing generic (slower) implementation\n");
 #endif
                 }
@@ -734,9 +715,9 @@ namespace gr {
                             d_init = 0;
 
 #ifdef DTV_SSE2
-                            viterbi_chunks_init_sse2(d_metric0, d_path0);
+                            viterbi_chunks_init_sse2(state->d_metric0, state->d_path0);
 #else
-                            viterbi_chunks_init_generic(d_metric0_generic, d_path0_generic);
+                            viterbi_chunks_init_generic(state->d_metric0_generic, state->d_path0_generic);
 #endif
 
                             // if we are not aligned with the beginning of a frame, we go 
@@ -781,16 +762,16 @@ namespace gr {
 
 #ifdef DTV_SSE2
                                     viterbi_butterfly2_sse2(&d_inbits[in_count & 0xfffffffc],
-                                            d_metric0,
-                                            d_metric1,
-                                            d_path0,
-                                            d_path1);
+                                            state->d_metric0,
+                                            state->d_metric1,
+                                            state->d_path0,
+                                            state->d_path1);
 #else
                                     viterbi_butterfly2_generic(&d_inbits[in_count & 0xfffffffc],
-                                            d_metric0_generic,
-                                            d_metric1_generic,
-                                            d_path0_generic,
-                                            d_path1_generic);
+                                            state->d_metric0_generic,
+                                            state->d_metric1_generic,
+                                            state->d_path0_generic,
+                                            state->d_path1_generic);
 #endif
 
                                     if ((in_count > 0) && (in_count % 16) == 8) { // 8 or 11
@@ -798,10 +779,10 @@ namespace gr {
 
 #ifdef DTV_SSE2
                                         correct_bits = viterbi_get_output_sse2(
-                                                d_metric0, d_path0, d_ntraceback, &c);
+                                                state->d_metric0, state->d_path0, d_ntraceback, &c);
 #else
                                         correct_bits = viterbi_get_output_generic(
-                                                d_metric0_generic, d_path0_generic, d_ntraceback, &c);
+                                                state->d_metric0_generic, state->d_path0_generic, d_ntraceback, &c);
 #endif
 
                                         if (d_init == 0) {
