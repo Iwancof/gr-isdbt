@@ -142,11 +142,12 @@ namespace gr {
                   //set_alignment(std::max(1, alignment_multiple));
 
                   d_align = volk_get_alignment();
+                  const int volk_pad = 32;
 
-                  d_gamma = (gr_complex *)volk_malloc((d_fft_length + d_cp_length)*sizeof(gr_complex), d_align);
-                  d_phi = (float *)volk_malloc(sizeof(float)*d_fft_length, d_align);
-                  d_lambda = (float *)volk_malloc(sizeof(float)*d_fft_length, d_align);
-                  d_derot = (gr_complex *)volk_malloc((d_cp_length + d_fft_length)*sizeof(gr_complex), d_align);
+                  d_gamma = (gr_complex *)volk_malloc((d_fft_length + d_cp_length + volk_pad)*sizeof(gr_complex), d_align);
+                  d_phi = (float *)volk_malloc(sizeof(float)*(d_fft_length + volk_pad), d_align);
+                  d_lambda = (float *)volk_malloc(sizeof(float)*(d_fft_length + volk_pad), d_align);
+                  d_derot = (gr_complex *)volk_malloc((d_cp_length + d_fft_length + volk_pad)*sizeof(gr_complex), d_align);
                   d_phaseinc = 0; 
                   d_nextphaseinc = 0; 
                   d_nextpos = 0; 
@@ -156,8 +157,8 @@ namespace gr {
                   d_corr = (gr_complex *)volk_malloc((16 * d_fft_length + d_cp_length)*sizeof(gr_complex), d_align);
                   peak_detect_init(0.3, 0.9);
 
-                  d_postfft = (gr_complex *)volk_malloc(d_fft_length*sizeof(gr_complex), d_align);
-                  d_fineshift = (gr_complex *)volk_malloc(d_fft_length*sizeof(gr_complex), d_align);
+                  d_postfft = (gr_complex *)volk_malloc((d_fft_length + volk_pad)*sizeof(gr_complex), d_align);
+                  d_fineshift = (gr_complex *)volk_malloc((d_fft_length + volk_pad)*sizeof(gr_complex), d_align);
 
                   //integer frequency correction part
                   d_zeros_on_left = int(ceil((d_fft_length-d_active_carriers)/2.0)); 
@@ -166,8 +167,8 @@ namespace gr {
                   d_freq_offset_agree_count = 0;
                   d_freq_offset_acq = false; 
                   tmcc_positions(d_fft_length); 
-                  d_pilot_values = (gr_complex *)volk_malloc(d_active_carriers*sizeof(gr_complex), d_align);
-                  d_known_phase_diff = (float *)volk_malloc(d_tmcc_carriers_size*sizeof(float), d_align);
+                  d_pilot_values = (gr_complex *)volk_malloc((d_active_carriers + volk_pad)*sizeof(gr_complex), d_align);
+                  d_known_phase_diff = (float *)volk_malloc((d_tmcc_carriers_size + volk_pad)*sizeof(float), d_align);
                   generate_prbs();
                   // Obtain phase diff for all tmcc pilots
                   // TODO eliminate d_known_phase_diff
@@ -239,7 +240,7 @@ namespace gr {
                   d_delta_aux = 0;
                   d_samp_phase = 0; 
                   //d_interpolated = new gr_complex[2*d_fft_length+d_cp_length]; 
-                  d_interpolated = (gr_complex *)volk_malloc((d_fft_length+d_cp_length)*sizeof(gr_complex), d_align); 
+                  d_interpolated = (gr_complex *)volk_malloc((d_fft_length+d_cp_length+volk_pad)*sizeof(gr_complex), d_align);
                   d_interpolate = interpolate; 
                   d_cp_start_offset = -10; 
 
