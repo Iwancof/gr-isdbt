@@ -1267,7 +1267,7 @@ namespace gr {
                         // use the last value and employ rate error for tracking the CP.
                         // The frequency error will go haywire upon sync loss, so we use that
                         // in order to know whether we've lost sync.
-                        d_cp_found=(fabs(d_total_freq_error/(2.0*M_PI))<0.75);
+                        d_cp_found=(fabs(d_total_freq_error/(2.0*M_PI))<2.0);
 
                         if ( !d_cp_found )
                         {
