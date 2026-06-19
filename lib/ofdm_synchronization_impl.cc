@@ -162,7 +162,7 @@ namespace gr {
 
                   //integer frequency correction part
                   d_zeros_on_left = int(ceil((d_fft_length-d_active_carriers)/2.0)); 
-                  d_freq_offset_max = 10; 
+                  d_freq_offset_max = 30;
                   d_freq_offset = 0;
                   d_freq_offset_agree_count = 0;
                   d_freq_offset_acq = false; 
@@ -1120,7 +1120,7 @@ namespace gr {
 
             //integer frequency correction part
             d_zeros_on_left = int(ceil((d_fft_length-d_active_carriers)/2.0)); 
-            d_freq_offset_max = 10; 
+            d_freq_offset_max = 30;
             d_freq_offset = 0;
             d_freq_offset_agree_count = 0;
             d_freq_offset_acq = false; 
