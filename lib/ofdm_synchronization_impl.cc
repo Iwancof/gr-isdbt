@@ -1316,11 +1316,9 @@ namespace gr {
                         {
                             current_freq_offset = estimate_integer_freq_offset(d_postfft);
                         }
-                        // Since I'm compensating it in the derotator I have to add it
-                        d_freq_offset += current_freq_offset;
+                        d_freq_offset = current_freq_offset;
 
-                        // correct the integer frequency offset (point to the shifted position)
-                        d_integer_freq_derotated = &d_postfft[0] + current_freq_offset + d_zeros_on_left; 
+                        d_integer_freq_derotated = &d_postfft[0] + d_freq_offset + d_zeros_on_left;
 
                         //Estimate the current symbol index. 
                         //Only re-estimate it when the symbol was not acquired. 
@@ -1390,9 +1388,9 @@ namespace gr {
                             out_samp_error[i] = d_est_delta; 
                         }
 
-                        // This is the value used for derotation. Attention should be payed, since 
-                        // it includes coarse frequency, fine frequency AND integer frequency offset. 
-                        d_total_freq_error = d_fine_freq + d_coarse_freq + M_PI*2*d_freq_offset; 
+                        // Derotation handles only fractional freq correction.
+                        // Integer offset is handled by the d_integer_freq_derotated pointer.
+                        d_total_freq_error = d_fine_freq + d_coarse_freq;
 
                         // I update the fine frequency estimations. 
                         estimate_fine_synchro(&d_channel_gain[CH_GAIN_FIRST], &d_previous_channel_gain[CH_GAIN_FIRST]);
