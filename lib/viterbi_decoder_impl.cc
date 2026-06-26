@@ -564,7 +564,7 @@ namespace gr {
                             d_k = 3;
                             d_n = 4;
                             d_puncture = d_puncture_3_4;
-                            d_ntraceback = 10;
+                            d_ntraceback = 24;
                             break;
                         case 3:
                             d_k = 5;

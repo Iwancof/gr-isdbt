@@ -225,9 +225,9 @@ namespace gr {
 
                 for (int i = 0; i < noutput_items; i++)
                 {
-                    derandomize(&in[i*d_noutput], d_not_random); 
-                    derotate(d_not_random, d_derotated); 
-                    intersegment_deinterleave(d_derotated, &out[i*d_noutput]); 
+                    derandomize(&in[i*d_noutput], d_not_random);
+                    derotate(d_not_random, d_derotated);
+                    intersegment_deinterleave(d_derotated, &out[i*d_noutput]);
                 }
 
                 // Tell runtime system how many output items we produced.

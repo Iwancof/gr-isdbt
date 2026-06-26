@@ -36,7 +36,7 @@
 #define POLYA 0x4f
 #define POLYB 0x6d
 // Maximum number of traceback bytes
-#define TRACEBACK_MAX 24
+#define TRACEBACK_MAX 48
 
 #ifdef DTV_SSE2
 union branchtab27 {
